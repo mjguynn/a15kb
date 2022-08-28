@@ -46,14 +46,26 @@ pub fn run_server(socket_name: &Path) -> Result<(), anyhow::Error> {
         );
     }
 
-    // Make sure everyone has R/W permissions for that directory.
-    let rw = fs::Permissions::from_mode(0o666);
-    fs::set_permissions(SOCKET_DIR, rw).context("couldn't set socket directory permissions")?;
+    // Make sure everyone has R/X permissions for that directory.
+    // Only we (the server) should have write permissions.
+    let rx = fs::Permissions::from_mode(0o755);
+    fs::set_permissions(SOCKET_DIR, rx).context("couldn't set socket directory permissions")?;
 
     let mut path = PathBuf::from(SOCKET_DIR);
     path.push(socket_name);
 
-    let listener = net::UnixListener::bind(path).context("couldn't bind socket")?;
+    // Remove the socket file if it already exists.
+    if let Err(err) = fs::remove_file(&path) {
+        ensure!(
+            err.kind() == io::ErrorKind::NotFound,
+            "couldn't remove existing socket"
+        );
+    }
+
+    let listener = net::UnixListener::bind(&path).context("couldn't bind socket")?;
+
+    let rw = fs::Permissions::from_mode(0o766);
+    fs::set_permissions(&path, rw).context("couldn't set socket file permissions")?;
 
     eprintln!("[info] server started");
     for stream in listener.incoming() {
@@ -73,7 +85,7 @@ pub fn run_server(socket_name: &Path) -> Result<(), anyhow::Error> {
 fn handle_connection(mut stream: UnixStream, ec: Arc<Mutex<Ec>>) {
     let id = thread::current().id();
     println!("[info]({id:?}) client connected");
-    while handle_request(&mut stream, &ec) {}
+    while !handle_request(&mut stream, &ec) {}
     println!("[info]({id:?}) client disconnected");
 }
 
@@ -113,6 +125,8 @@ fn send_response<T: Encode>(response: InternalResult<T>, stream: &mut UnixStream
     }
 }
 fn get_thermal_info(ec: &Mutex<Ec>) -> InternalResult<ThermalInfo> {
+    // It's unacceptable for this function to panic! The mutex will be poisoned and the `unwrap`
+    // will fail, bringing down all other connections in a cascade of panics!
     let mut ec = ec.lock().unwrap();
     let temp_cpu = ec.temp_cpu()?;
     let temp_gpu = ec.temp_gpu()?;
@@ -213,12 +227,12 @@ impl Ec {
         //
         // If you're have a different Aero model and want to run this anyways, you can disable the
         // safety check. Caveat emptor.
-        #[cfg(on)]
+        #[cfg(all())]
         {
             let product_name = fs::read_to_string("/sys/class/dmi/id/product_name")
                 .context("couldn't retrieve product name")?;
             ensure!(
-                product_name == "AERO 15 KB",
+                product_name == "AERO 15 KB\n",
                 "unsupported hardware ({product_name})"
             );
         }
