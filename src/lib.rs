@@ -31,11 +31,11 @@ use std::os::unix::net;
 use std::path::PathBuf;
 
 /// The socket directory. Unlike the socket name, this is static and cannot be changed.
-pub const SOCKET_DIR: &'static str = "/var/a15kb";
+pub const SOCKET_DIR: &'static str = "/run/a15kb";
 
 /// The filename of the listening socket in [`SOCKET_DIR`]. This can be changed by running the
 /// server with `--socket-name [name]`.
-pub const SOCKET_NAME: &'static str = "default";
+pub const DEFAULT_SOCKET_NAME: &'static str = "default.sock";
 
 /// Laptop fan mode.
 #[derive(Debug, Clone, Copy, PartialEq, Decode, Encode)]
