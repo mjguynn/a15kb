@@ -120,19 +120,19 @@ impl Connection {
 
     /// Requests thermal information from the server. This is a blocking call.
     pub fn thermal_info(&mut self) -> ExchangeResult<ThermalInfo> {
-        self.encode(Command::GetThermalInfo {})?;
+        self.encode(Request::GetThermalInfo {})?;
         self.decode()
     }
 
     /// Requests to set the hardware fan state. This is a blocking call.
     pub fn set_fan_state(&mut self, fan_state: FanState) -> ExchangeResult<FanChangeResponse> {
-        self.encode(Command::SetFanState(fan_state))?;
+        self.encode(Request::SetFanState(fan_state))?;
         self.decode()
     }
 
-    /// Submits a raw [`Command`] to the socket. This is a blocking call.
-    fn encode(&mut self, command: Command) -> ExchangeResult<()> {
-        bincode::encode_into_std_write(command, &mut self.stream, BINCODE_CONFIG)?;
+    /// Submits a raw [`Request`] to the socket. This is a blocking call.
+    fn encode(&mut self, rq: Request) -> ExchangeResult<()> {
+        bincode::encode_into_std_write(rq, &mut self.stream, BINCODE_CONFIG)?;
         Ok(())
     }
     /// Attempts to decode a value of type `T` from the socket. This is a blocking call.
@@ -183,9 +183,9 @@ impl TryFrom<f32> for Percent {
     }
 }
 
-/// A command the client sends to the server.
+/// A request that the client sends to the server.
 #[derive(Decode, Encode)]
-enum Command {
+enum Request {
     /// Retrieves thermal information. Success type: [`ThermalInfo`]
     GetThermalInfo,
     /// Sets the hardware fan state. Success type: [`FanChangeResponse`]
