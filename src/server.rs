@@ -78,10 +78,10 @@ pub fn run_server(socket_name: &Path) -> Result<(), anyhow::Error> {
         }
     }
 
-    // This is actually unreachable.
-    Ok(())
+    unreachable!("UnixListener::incoming never returns None")
 }
 
+/// Handles a connection request-by-request until `handle_request` says it should stop.
 fn handle_connection(mut stream: UnixStream, ec: Arc<Mutex<Ec>>) {
     let id = thread::current().id();
     println!("[info]({id:?}) client connected");
@@ -89,12 +89,13 @@ fn handle_connection(mut stream: UnixStream, ec: Arc<Mutex<Ec>>) {
     println!("[info]({id:?}) client disconnected");
 }
 
-/// Handles the next request from the stream. Returns whether the server should terminate the connection.
+/// Handles the next request from the stream. Returns whether the server should terminate the
+/// connection.
 fn handle_request(stream: &mut UnixStream, ec: &Mutex<Ec>) -> bool {
     let request = bincode::decode_from_std_read(stream, BINCODE_CONFIG);
     match request {
         Ok(Request::GetThermalInfo) => send_response(get_thermal_info(ec), stream),
-        Ok(Request::SetFanState(fans)) => todo!(),
+        Ok(Request::SetFanState(fan_state)) => send_response(set_fan_state(ec, fan_state), stream),
         // reached end of stream unexpectedly, terminate connection
         Err(bincode::error::DecodeError::UnexpectedEnd) => return true,
         Err(_) => {
@@ -124,6 +125,8 @@ fn send_response<T: Encode>(response: InternalResult<T>, stream: &mut UnixStream
         }
     }
 }
+
+/// Attempts to retrieve the laptop's thermal information.
 fn get_thermal_info(ec: &Mutex<Ec>) -> InternalResult<ThermalInfo> {
     // It's unacceptable for this function to panic! The mutex will be poisoned and the `unwrap`
     // will fail, bringing down all other connections in a cascade of panics!
@@ -159,6 +162,33 @@ fn get_thermal_info(ec: &Mutex<Ec>) -> InternalResult<ThermalInfo> {
         fan_speed_fixed,
         fan_state,
     })
+}
+
+/// Attempts to set the laptop's fan state.
+fn set_fan_state(ec: &Mutex<Ec>, fan_state: FanState) -> InternalResult<FanChangeResponse> {
+    // It's unacceptable for this function to panic! The mutex will be poisoned and the `unwrap`
+    // will fail, bringing down all other connections in a cascade of panics!
+    let mut ec = ec.lock().unwrap();
+
+    if let FanState::Fixed(speed) = fan_state {
+        let min = Percent::try_from(FAN_FIXED_SPEED_MIN).unwrap();
+        if speed < min {
+            return Ok(FanChangeResponse::UnsafeSpeed(min));
+        }
+        let fhw_speed = speed.as_f32() * (HW_MAX_FAN_SPEED as f32);
+        let hw_speed = fhw_speed as u8;
+        ec.set_fan_fixed_hw_speeds((hw_speed, hw_speed))?;
+    }
+    // Set the fan modes after the fan state
+    let fan_modes = match fan_state {
+        // (quiet, gaming, fixed)
+        FanState::Normal => (false, false, false),
+        FanState::Quiet => (true, false, false),
+        FanState::Aggressive => (false, true, false),
+        FanState::Fixed(_) => (false, false, true),
+    };
+    ec.set_fan_modes(fan_modes)?;
+    Ok(FanChangeResponse::Success)
 }
 
 /// The maximum integer speed of the fan. [Source.][source]
@@ -256,16 +286,23 @@ impl Ec {
         Ok(Self { inner })
     }
 
+    /// Sets the file cursor to `offset` bytes from the start of the embedded controller data.
+    ///
+    /// # Safety
+    /// This is *probably* safe, even on invalid hardware. Still, treat it as if it could brick your computer.
+    unsafe fn set_offset(&mut self, offset: u64) -> InternalResult<()> {
+        match self.inner.seek(io::SeekFrom::Start(offset)) {
+            Ok(pos) if pos == offset => Ok(()),
+            Ok(_) => ec_error!("failed to access EC: seek error"),
+            Err(err) => ec_error!("failed to access EC: {}", err),
+        }
+    }
     /// Fill up `buffer` by reading bytes from the given offset in the embedded controller.
     ///
     /// # Safety
     /// This is *probably* safe, even on invalid hardware. Still, treat it as if it could brick your computer.
     unsafe fn read_bytes(&mut self, offset: u64, buffer: &mut [u8]) -> InternalResult<()> {
-        match self.inner.seek(io::SeekFrom::Start(offset)) {
-            Ok(pos) if pos == offset => (),
-            Ok(_) => return ec_error!("failed to access EC: seek error"),
-            Err(err) => return ec_error!("failed to access EC: {}", err),
-        }
+        self.set_offset(offset)?;
         match self.inner.read(buffer) {
             Ok(num_read) if num_read == buffer.len() => Ok(()),
             Ok(_) => ec_error!("failed to read EC: not enough read"),
@@ -276,7 +313,7 @@ impl Ec {
     /// Read the byte at the given offset of the embedded controller.
     ///
     /// # Safety
-    /// Same as `read_bytes`.
+    /// Same as [`read_bytes`].
     unsafe fn read_byte(&mut self, offset: u64) -> InternalResult<u8> {
         let mut byte = 0u8;
         self.read_bytes(offset, std::slice::from_mut(&mut byte))?;
@@ -289,9 +326,8 @@ impl Ec {
     /// Panics if the bit index is out of range (i.e. not in 0..=7)
     ///
     /// # Safety
-    /// Same as `read_bytes`.
-    unsafe fn read_bit(&mut self, offset_and_bit: (u64, u8)) -> InternalResult<bool> {
-        let (offset, bit) = offset_and_bit;
+    /// Same as [`read_bytes`].
+    unsafe fn read_bit(&mut self, (offset, bit): (u64, u8)) -> InternalResult<bool> {
         let byte = self.read_byte(offset)?;
         let shifted = byte.checked_shr(bit.into()).expect("invalid bit index");
         let extracted = shifted & 1;
@@ -340,117 +376,65 @@ impl Ec {
         Ok((fan0, fan1))
     }
 
-    /*
     /// Write the contents of `buffer` to the given offset in the embedded controller.
     ///
     /// # Safety
     /// This could brick your computer.
-    unsafe fn write_bytes(&mut self, offset: u64, buffer: &[u8]) -> Result<(), String> {
-        if let Err(err) = self.inner.seek(io::SeekFrom::Start(offset)) {
-            return nonfatal!("failed to access EC: {}", err);
+    unsafe fn write_bytes(&mut self, offset: u64, buffer: &[u8]) -> InternalResult<()> {
+        self.set_offset(offset)?;
+        match self.inner.write(buffer) {
+            Ok(num_read) if num_read == buffer.len() => Ok(()),
+            Ok(_) => ec_error!("failed to write EC: not enough written"),
+            Err(err) => ec_error!("failed to write EC: {}", err),
         }
-        let mut ex = || {
-            self.ec_handle.seek(io::SeekFrom::Start(offset))?;
-            let num_written = self.ec_handle.write(buffer)?;
-            if num_written != buffer.len() {
-                return Err(std::io::ErrorKind::Other.into());
-            }
-            Ok(())
-        };
-        ex().map_err(|source| EK::EcWriteError { offset, source }.into())
     }
-    */
 
-    /*
-    fn write_bit(&mut self, offset: u64, bit: u8, val: bool) -> Result<()> {
-        // TODO: You can have separate fixed speeds for each of the fans.
-        // Right now, we read both speeds and average them. Maybe we should
-        // expose each fan speed invidually?
-        let mut fixed_speeds = [0u8, 0u8];
-        self.read_bytes(0xB0, &mut fixed_speeds)?;
+    /// Write the contents of `buffer` to the given offset in the embedded controller.
+    ///
+    /// # Safety
+    /// Same as [`write_bytes`].
+    unsafe fn write_byte(&mut self, offset: u64, byte: u8) -> InternalResult<()> {
+        self.write_bytes(offset, std::slice::from_ref(&byte))
+    }
 
-        let mut byte = 0u8;
-        self.read_bytes(offset, std::slice::from_mut(&mut byte))?;
-        let shifted = 1u8.checked_shl(bit.into()).ok_or(EK::InvalidBit(bit))?;
+    /// Write to the selected bit of the byte at the given offset of the embedded controller.
+    ///
+    /// # Panics
+    /// Panics if the bit index is out of range (i.e. not in 0..=7)
+    ///
+    /// # Safety
+    /// Same as [`write_bytes`].
+    unsafe fn write_bit(&mut self, (offset, bit): (u64, u8), val: bool) -> InternalResult<()> {
+        let byte = self.read_byte(offset)?;
+        let shifted = 1u8.checked_shl(bit.into()).expect("invalid bit index");
         let changed = if val { byte | shifted } else { byte & !shifted };
-        self.write_bytes(offset, std::slice::from_ref(&changed))
+        self.write_byte(offset, changed)
     }
-    fn set_quiet_fans(&mut self, val: bool) -> Result<()> {
-        self.write_bit(0x08, 6, val)
-    }
-    fn get_quiet_fans(&mut self) -> Result<bool> {
-        self.read_bit(0x08, 6)
-    }
-    fn set_gaming_fans(&mut self, val: bool) -> Result<()> {
-        self.write_bit(0x0C, 4, val)
-    }
-    fn get_gaming_fans(&mut self) -> Result<bool> {
-        self.read_bit(0x0C, 4)
-    }
-    fn set_custom_fans(&mut self, val: Option<f32>) -> Result<()> {
-        if let Some(speed) = val {
-            let int_speed = cvt_fan_speed(speed)?;
-            self.write_bit(0x06, 4, true)?; // custom fixed speed enabled
-            self.write_bytes(0xB0, &[int_speed, int_speed])?; // set fan 0 & 1
-        } else {
-            self.write_bit(0x06, 4, false)?;
-        }
-        Ok(())
-    }
-    fn get_custom_fans(&mut self) -> Result<Option<f32>> {
-        if self.read_bit(0x06, 4)? {
-            let mut int_speeds = [0u8, 0u8];
-            self.read_bytes(0xB0, &mut int_speeds)?;
-            let speed_0 = ivt_fan_speed(int_speeds[0])?;
-            let speed_1 = ivt_fan_speed(int_speeds[1])?;
-            Ok(Some((speed_0 + speed_1) * 0.5))
-        } else {
-            Ok(None)
+
+    /// Sets the computer's fan modes.
+    ///
+    /// # Panics
+    /// Panics if `quiet && gaming`, since I haven't tested that combo yet and I'm afraid to do so.
+    /// AFAIK there's no reason to want to set that anyways.
+    fn set_fan_modes(&mut self, (quiet, gaming, fixed): (bool, bool, bool)) -> InternalResult<()> {
+        assert!(!(quiet && gaming));
+        unsafe {
+            self.write_bit(offs::FAN_QUIET, quiet)?;
+            self.write_bit(offs::FAN_GAMING, gaming)?;
+            self.write_bit(offs::FAN_FIXED, fixed)
         }
     }
-    pub fn set_fan_mode(&mut self, fm: FanMode) -> Result<()> {
-        match fm {
-            FanMode::Quiet => {
-                self.set_quiet_fans(true)?;
-                self.set_gaming_fans(false)?;
-                self.set_custom_fans(None)
-            }
-            FanMode::Normal => {
-                self.set_quiet_fans(false)?;
-                self.set_gaming_fans(false)?;
-                self.set_custom_fans(None)
-            }
-            FanMode::Gaming => {
-                self.set_quiet_fans(false)?;
-                self.set_gaming_fans(true)?;
-                self.set_custom_fans(None)
-            }
-            FanMode::Custom(pcnt) => {
-                self.set_quiet_fans(false)?;
-                self.set_gaming_fans(false)?;
-                self.set_custom_fans(Some(pcnt))
-            }
+
+    /// Sets the fixed fan hardware speeds.
+    ///
+    /// # Panics
+    /// Panics if either speed is greater than [`HW_MAX_FAN_SPEED`].
+    fn set_fan_fixed_hw_speeds(&mut self, (fan0, fan1): (u8, u8)) -> InternalResult<()> {
+        assert!(fan0 <= HW_MAX_FAN_SPEED);
+        assert!(fan1 <= HW_MAX_FAN_SPEED);
+        unsafe {
+            self.write_byte(offs::FAN_FIXED_HW_SPEED_0, fan0)?;
+            self.write_byte(offs::FAN_FIXED_HW_SPEED_1, fan1)
         }
     }
-    pub fn get_fan_mode(&mut self) -> Result<FanMode> {
-        let quiet = self.get_quiet_fans()?;
-        let gaming = self.get_gaming_fans()?;
-        let custom = self.get_custom_fans()?;
-        match (quiet, gaming, custom) {
-            (true, false, None) => Ok(FanMode::Quiet),
-            (false, false, None) => Ok(FanMode::Normal),
-            (false, true, None) => Ok(FanMode::Gaming),
-            (_, _, Some(pcnt)) => Ok(FanMode::Custom(pcnt)),
-            (true, true, None) => Err(EK::InvalidHwState.into()),
-        }
-    }
-    pub fn get_fan_rpm(&mut self) -> Result<(u16, u16)> {
-        let mut rpm0 = [0u8, 0u8];
-        self.read_bytes(0xFC, &mut rpm0)?;
-        let rpm0 = u16::from_be_bytes(rpm0);
-        let mut rpm1 = [0u8, 0u8];
-        self.read_bytes(0xFE, &mut rpm1)?;
-        let rpm1 = u16::from_be_bytes(rpm1);
-        Ok((rpm0, rpm1))
-    }*/
 }
