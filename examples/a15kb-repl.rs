@@ -1,3 +1,5 @@
+use anyhow::{bail, Context};
+
 fn parse_fan_state(s: &str) -> Option<a15kb::FanState> {
     if s == "quiet" {
         Some(a15kb::FanState::Quiet)
@@ -14,16 +16,18 @@ fn parse_fan_state(s: &str) -> Option<a15kb::FanState> {
     }
 }
 
-pub fn main() {
+pub fn main() -> Result<(), anyhow::Error> {
     let mut args = std::env::args();
     let socket_name = match args.nth(1).as_deref() {
-        Some("--socket-name") => args.next().expect("no socket name provided"),
-        Some(_) => panic!("unknown option"),
+        Some("--socket-name") => args
+            .next()
+            .context("--socket-name must be followed by a socket name")?,
+        Some(_) => bail!("unknown option"),
         None => a15kb::DEFAULT_SOCKET_NAME.to_owned(),
     };
 
     let mut cxn = a15kb::Connection::new(&socket_name)
-        .expect("failed to connect to socket, is the server running?");
+        .context("failed to connect to socket, is the server running?")?;
 
     for line in std::io::stdin().lines() {
         let line = line.unwrap();
@@ -51,4 +55,6 @@ pub fn main() {
             eprintln!("unknown command")
         }
     }
+
+    Ok(())
 }
