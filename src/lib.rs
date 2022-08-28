@@ -30,6 +30,10 @@ use std::fmt::{Display, Formatter};
 use std::os::unix::net;
 use std::path::PathBuf;
 
+mod server;
+
+pub use server::run_server;
+
 /// The socket directory. Unlike the socket name, this is static and cannot be changed.
 pub const SOCKET_DIR: &'static str = "/run/a15kb";
 
@@ -189,7 +193,7 @@ enum Command {
 }
 
 /// The bincode configuration used by both the client and the server.
-const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
+pub(crate) const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 
 /// Convienence alias.
 type ExchangeResult<T> = Result<T, ExchangeError>;
