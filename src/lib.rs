@@ -44,10 +44,6 @@ pub const DEFAULT_SOCKET_NAME: &'static str = "default.sock";
 /// Laptop fan mode.
 #[derive(Debug, Clone, Copy, PartialEq, Decode, Encode)]
 pub enum FanState {
-    /// An unexpected fan mode (i.e quiet and gaming mode enabled simultaneously). This can be
-    /// returned from a thermal query if the EC registers have been modified by external software.
-    /// Requesting to set the fan mode to `Unknown` is an error.
-    Unknown,
     /// Quiet fans. May temporarily turn off the fan, thermal-throttle the CPU, and disable
     /// Turboboost.
     Quiet,
@@ -73,9 +69,8 @@ pub struct ThermalInfo {
     /// The CPU temperature, in Celcius.
     pub temp_cpu: Celcius,
 
-    /// The GPU temperature, in Celcius. If `None`, the GPU is currently powered off, and its
-    /// temperature cannot be retrieved.
-    pub temp_gpu: Option<Celcius>,
+    /// The GPU temperature, in Celcius. This is 0 if the GPU is currently powered off.
+    pub temp_gpu: Celcius,
 
     /// The RPM of the left and right fans, respectively.
     pub fan_rpm: (u16, u16),
@@ -84,13 +79,14 @@ pub struct ThermalInfo {
     pub fan_speed_min: Percent,
 
     /// The fixed fan speed, expressed as a decimal percentage (i.e. `1.0` = 100%).
-    /// If the fan state is `FanState::Fixed(u)` then `u == fan_speed_fixed`.
+    /// If the fan state is `FanState::Fixed(u)` then `u == fan_speed_fixed.unwrap()`.
     /// This is duplicated outside of `fan_state` since it might be useful to know what the
     /// fixed fan speed was set to even if you're not using the fixed fan mode.
-    pub fan_speed_fixed: Percent,
+    /// This is `None` if the fan speed is set to an invalid value.
+    pub fan_speed_fixed: Option<Percent>,
 
-    /// The current fan mode.
-    pub fan_state: FanState,
+    /// The current fan mode. This is `None` if the fan is in an invalid state.
+    pub fan_state: Option<FanState>,
 }
 
 /// Represents any error which occurred while submitting a request to the server,
@@ -101,8 +97,10 @@ pub enum ExchangeError {
     RequestError(EncodeError),
     /// An error occurred while reading the response.
     ResponseError(DecodeError),
-    /// The server responded with an *unexpected* error.
-    ServerError(String),
+    /// The server encountered an internal error preventing it from doing its job.
+    InternalError,
+    /// The server claims the client's request was malformed.
+    MalformedRequest,
 }
 
 /// Represents a client connection to the a15kb server.
@@ -137,14 +135,18 @@ impl Connection {
     }
     /// Attempts to decode a value of type `T` from the socket. This is a blocking call.
     fn decode<T: Decode>(&mut self) -> ExchangeResult<T> {
-        match bincode::decode_from_std_read(&mut self.stream, BINCODE_CONFIG)? {
-            Err(err) => Err(ExchangeError::ServerError(err)),
-            Ok(val) => Ok(val),
+        let header = bincode::decode_from_std_read(&mut self.stream, BINCODE_CONFIG)?;
+        match header {
+            ResponseHeader::Success => (),
+            ResponseHeader::InternalError => return Err(ExchangeError::InternalError),
+            ResponseHeader::MalformedRequest => return Err(ExchangeError::MalformedRequest),
         }
+        let payload = bincode::decode_from_std_read(&mut self.stream, BINCODE_CONFIG)?;
+        Ok(payload)
     }
 }
 
-pub type Celcius = f32;
+pub type Celcius = u8;
 
 /// A newtype wrapper around an `f32` which ensures the wrapped value is in `0.0..=1.0`.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Decode, Encode)]
@@ -158,6 +160,10 @@ impl Percent {
     /// Returns the wrapped float.
     pub const fn as_f32(self) -> f32 {
         self.0
+    }
+    /// Returns the averages of two percents.
+    pub fn avg(a: Percent, b: Percent) -> Percent {
+        Self(0.5 * (a.0 + b.0))
     }
 }
 
@@ -174,6 +180,7 @@ impl From<Percent> for f32 {
 }
 
 /// An error thrown when converting an `f32` to a [`Percent`].
+#[derive(Debug)]
 pub struct FromPercentError;
 
 impl TryFrom<f32> for Percent {
@@ -190,6 +197,17 @@ enum Request {
     GetThermalInfo,
     /// Sets the hardware fan state. Success type: [`FanChangeResponse`]
     SetFanState(FanState),
+}
+
+/// The header of the server's response. This indicates what happened and what (if any) payload data follows.
+#[derive(Debug, Decode, Encode)]
+enum ResponseHeader {
+    /// The operation was "successful". The requested data follows this.
+    Success,
+    /// A serious internal error occurred in the server. No data follows this.
+    InternalError,
+    /// The client allegedly submitted a malformed request. No data follows this.
+    MalformedRequest,
 }
 
 /// The bincode configuration used by both the client and the server.
@@ -217,8 +235,11 @@ impl Display for ExchangeError {
             Self::ResponseError(err) => {
                 write!(f, "couldn't retrieve response from a15kb server: {}", err)
             }
-            Self::ServerError(err) => {
-                write!(f, "a15kb server responded with error: {}", err)
+            Self::InternalError => {
+                write!(f, "a15kb server had internal error")
+            }
+            Self::MalformedRequest => {
+                write!(f, "a15kb server didn't understand our request")
             }
         }
     }
@@ -228,7 +249,8 @@ impl Error for ExchangeError {
         match self {
             Self::RequestError(err) => Some(err),
             Self::ResponseError(err) => Some(err),
-            Self::ServerError(_) => None,
+            Self::InternalError => None,
+            Self::MalformedRequest => None,
         }
     }
 }
