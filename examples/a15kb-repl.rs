@@ -46,8 +46,12 @@ pub fn main() -> Result<(), anyhow::Error> {
             };
             match cxn.set_fan_state(fan_state) {
                 Ok(a15kb::FanChangeResponse::Success) => println!("success"),
-                Ok(a15kb::FanChangeResponse::UnsafeSpeed(s)) => {
-                    println!("unsafe speed specified, minimum safe is {s}")
+                Ok(a15kb::FanChangeResponse::UnsafeSpeed(allowed)) => {
+                    println!(
+                        "unsafe speed specified. allowed: {}..={}",
+                        allowed.start(),
+                        allowed.end()
+                    )
                 }
                 Err(err) => println!("error: {err}"),
             }

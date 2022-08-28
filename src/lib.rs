@@ -27,6 +27,7 @@ use bincode::error::{DecodeError, EncodeError};
 use bincode::{Decode, Encode};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::ops::RangeInclusive;
 use std::os::unix::net;
 use std::path::PathBuf;
 
@@ -60,10 +61,11 @@ pub enum FanState {
 pub enum FanChangeResponse {
     /// The fan mode was changed succesfully.
     Success,
-    /// The requested fixed fan speed was below the minimum safe speed (returned in payload).
-    UnsafeSpeed(Percent),
+    /// The requested fixed fan speed was outside of the allowable speed range.
+    UnsafeSpeed(RangeInclusive<Percent>),
 }
 
+/// The current thermal state of the system.
 #[derive(Debug, Decode, Encode)]
 pub struct ThermalInfo {
     /// The CPU temperature, in Celcius.
@@ -75,15 +77,13 @@ pub struct ThermalInfo {
     /// The RPM of the left and right fans, respectively.
     pub fan_rpm: (u16, u16),
 
-    /// The minimum fan speed permitted by the server, expressed as a decimal percentage.
-    pub fan_speed_min: Percent,
+    /// The fan speeds permitted by the server.
+    pub fan_speed_range: RangeInclusive<Percent>,
 
-    /// The fixed fan speed, expressed as a decimal percentage (i.e. `1.0` = 100%).
-    /// If the fan state is `FanState::Fixed(u)` then `u == fan_speed_fixed.unwrap()`.
-    /// This is duplicated outside of `fan_state` since it might be useful to know what the
-    /// fixed fan speed was set to even if you're not using the fixed fan mode.
-    /// This is `None` if the fan speed is set to an invalid value.
-    pub fan_speed_fixed: Option<Percent>,
+    /// The fixed fan speed. If the fan state is `FanState::Fixed(u)` then `u == fan_speed_fixed`.
+    /// This is duplicated outside of `fan_state` since it might be useful to know what the fixed
+    /// fan speed was set to even if you're not using the fixed fan mode.
+    pub fan_speed_fixed: Percent,
 
     /// The current fan mode. This is `None` if the fan is in an invalid state.
     pub fan_state: Option<FanState>,
@@ -98,10 +98,28 @@ pub enum ExchangeError {
     /// An error occurred while reading the response.
     ResponseError(DecodeError),
     /// The server encountered an internal error preventing it from doing its job.
-    InternalError,
-    /// The server claims the client's request was malformed.
-    MalformedRequest,
+    InternalError(InternalError),
 }
+
+/// The server encountered an internal error preventing it from doing its job.
+#[derive(Debug, Clone, Copy, Decode, Encode)]
+pub enum InternalError {
+    /// An error which occurred at the level of the embedded controller. This is
+    /// pretty opaque, which is fine, since there's nothing you can really *do*
+    /// about an EC error (at least from userspace)
+    EcError,
+    /// The client's request could not be decoded.
+    CouldNotDecode,
+}
+impl Display for InternalError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EcError => write!(f, "error accessing embedded controller"),
+            Self::CouldNotDecode => write!(f, "server could not decode client request"),
+        }
+    }
+}
+impl Error for InternalError {}
 
 /// Represents a client connection to the a15kb server.
 pub struct Connection {
@@ -138,8 +156,7 @@ impl Connection {
         let header = bincode::decode_from_std_read(&mut self.stream, BINCODE_CONFIG)?;
         match header {
             ResponseHeader::Success => (),
-            ResponseHeader::InternalError => return Err(ExchangeError::InternalError),
-            ResponseHeader::MalformedRequest => return Err(ExchangeError::MalformedRequest),
+            ResponseHeader::InternalError(err) => return Err(ExchangeError::InternalError(err)),
         }
         let payload = bincode::decode_from_std_read(&mut self.stream, BINCODE_CONFIG)?;
         Ok(payload)
@@ -148,14 +165,14 @@ impl Connection {
 
 pub type Celcius = u8;
 
-/// A newtype wrapper around an `f32` which ensures the wrapped value is in `0.0..=1.0`.
+/// A newtype wrapper around an `f32` which ensures the wrapped value is positive.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Decode, Encode)]
 pub struct Percent(f32);
 
 impl Percent {
-    /// Creates a percent if the given value is in `0.0..=1.0`.
+    /// Creates a percent if the given value is positive.
     pub fn new(value: f32) -> Option<Self> {
-        (0.0..=1.0).contains(&value).then_some(Self(value))
+        value.is_sign_positive().then_some(Self(value))
     }
     /// Returns the wrapped float.
     pub const fn as_f32(self) -> f32 {
@@ -204,10 +221,8 @@ enum Request {
 enum ResponseHeader {
     /// The operation was "successful". The requested data follows this.
     Success,
-    /// A serious internal error occurred in the server. No data follows this.
-    InternalError,
-    /// The client allegedly submitted a malformed request. No data follows this.
-    MalformedRequest,
+    /// An internal error occurred in the server. No extra data follows this.
+    InternalError(InternalError),
 }
 
 /// The bincode configuration used by both the client and the server.
@@ -235,11 +250,8 @@ impl Display for ExchangeError {
             Self::ResponseError(err) => {
                 write!(f, "couldn't retrieve response from a15kb server: {}", err)
             }
-            Self::InternalError => {
-                write!(f, "a15kb server had internal error")
-            }
-            Self::MalformedRequest => {
-                write!(f, "a15kb server didn't understand our request")
+            Self::InternalError(err) => {
+                write!(f, "a15kb server had internal error: {}", err)
             }
         }
     }
@@ -249,8 +261,7 @@ impl Error for ExchangeError {
         match self {
             Self::RequestError(err) => Some(err),
             Self::ResponseError(err) => Some(err),
-            Self::InternalError => None,
-            Self::MalformedRequest => None,
+            Self::InternalError(err) => err.source(),
         }
     }
 }

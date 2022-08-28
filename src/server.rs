@@ -100,7 +100,7 @@ fn handle_request(stream: &mut UnixStream, ec: &Mutex<Ec>) -> bool {
         Err(bincode::error::DecodeError::UnexpectedEnd) => return true,
         Err(_) => {
             let _ = bincode::encode_into_std_write(
-                ResponseHeader::MalformedRequest,
+                ResponseHeader::InternalError(InternalError::CouldNotDecode),
                 stream,
                 BINCODE_CONFIG,
             );
@@ -116,9 +116,9 @@ fn send_response<T: Encode>(response: InternalResult<T>, stream: &mut UnixStream
             let _ = bincode::encode_into_std_write(ResponseHeader::Success, stream, BINCODE_CONFIG);
             let _ = bincode::encode_into_std_write(val, stream, BINCODE_CONFIG);
         }
-        Err(_) => {
+        Err(err) => {
             let _ = bincode::encode_into_std_write(
-                ResponseHeader::InternalError,
+                ResponseHeader::InternalError(err),
                 stream,
                 BINCODE_CONFIG,
             );
@@ -134,17 +134,18 @@ fn get_thermal_info(ec: &Mutex<Ec>) -> InternalResult<ThermalInfo> {
     let temp_cpu = ec.temp_cpu()?;
     let temp_gpu = ec.temp_gpu()?;
     let fan_rpm = ec.fan_rpm()?;
-    let fan_speed_min = Percent::try_from(FAN_FIXED_SPEED_MIN).unwrap();
+    let fan_speed_range = {
+        let fan_speed_min = Percent::try_from(FAN_FIXED_SPEED_MIN).unwrap();
+        let fan_speed_max = Percent::try_from(1.0).unwrap();
+        fan_speed_min..=fan_speed_max
+    };
     let fan_speed_fixed = {
         let (hw0, hw1) = ec.fan_fixed_hw_speeds()?;
         let fl0 = (hw0 as f32) / (HW_MAX_FAN_SPEED as f32);
         let fl1 = (hw1 as f32) / (HW_MAX_FAN_SPEED as f32);
-        let cvt0 = Percent::try_from(fl0);
-        let cvt1 = Percent::try_from(fl1);
-        match (cvt0, cvt1) {
-            (Ok(pcnt0), Ok(pcnt1)) => Some(Percent::avg(pcnt0, pcnt1)),
-            _ => None,
-        }
+        let cvt0 = Percent::try_from(fl0).expect("hw0 was literally JUST unsigned");
+        let cvt1 = Percent::try_from(fl1).expect("hw1 was literally JUST unsigned");
+        Percent::avg(cvt0, cvt1)
     };
     let fan_state = match ec.fan_modes()? {
         // (quiet, gaming, fixed)
@@ -152,13 +153,13 @@ fn get_thermal_info(ec: &Mutex<Ec>) -> InternalResult<ThermalInfo> {
         (true, false, false) => Some(FanState::Quiet),
         (false, true, false) => Some(FanState::Aggressive),
         (true, true, false) => None, // quiet AND gaming?
-        (_, _, true) => fan_speed_fixed.map(FanState::Fixed),
+        (_, _, true) => Some(FanState::Fixed(fan_speed_fixed)),
     };
     Ok(ThermalInfo {
         temp_cpu,
         temp_gpu,
         fan_rpm,
-        fan_speed_min,
+        fan_speed_range,
         fan_speed_fixed,
         fan_state,
     })
@@ -171,9 +172,13 @@ fn set_fan_state(ec: &Mutex<Ec>, fan_state: FanState) -> InternalResult<FanChang
     let mut ec = ec.lock().unwrap();
 
     if let FanState::Fixed(speed) = fan_state {
-        let min = Percent::try_from(FAN_FIXED_SPEED_MIN).unwrap();
-        if speed < min {
-            return Ok(FanChangeResponse::UnsafeSpeed(min));
+        let allowed = {
+            let min = Percent::try_from(FAN_FIXED_SPEED_MIN).unwrap();
+            let max = Percent::try_from(FAN_FIXED_SPEED_MAX).unwrap();
+            min..=max
+        };
+        if !allowed.contains(&speed) {
+            return Ok(FanChangeResponse::UnsafeSpeed(allowed));
         }
         let fhw_speed = speed.as_f32() * (HW_MAX_FAN_SPEED as f32);
         let hw_speed = fhw_speed as u8;
@@ -196,8 +201,11 @@ fn set_fan_state(ec: &Mutex<Ec>, fan_state: FanState) -> InternalResult<FanChang
 /// [source]: https://github.com/tangalbert919/p37-ec-aero-15/blob/master/Aero%2015%20Fan%20Control%20Registers.md#custom-fan-mode-auto-maximum
 const HW_MAX_FAN_SPEED: u8 = 229;
 
-/// The minimum allowable fixed fan speed, as a percentage (but not stored as a percent because floats don't like CTFE)
+/// The minimum allowable fixed fan speed
 const FAN_FIXED_SPEED_MIN: f32 = 0.3;
+
+/// The maximum allowable fixed fan speed
+const FAN_FIXED_SPEED_MAX: f32 = 1.0;
 
 /// Offsets (and possibly bit indices) of EC registers.
 mod offs {
@@ -223,16 +231,6 @@ mod offs {
     pub const FAN_RPM_0: u64 = 0xFC;
     /// Big-endian DWORD. The right fan's RPM.
     pub const FAN_RPM_1: u64 = 0xFE;
-}
-
-/// An error which occurred at the level of the embedded controller. This is
-/// pretty opaque, which is fine, since there's nothing you can really *do*
-/// about an EC error (at least from userspace)
-enum InternalError {
-    /// An error which occurred at the level of the embedded controller. This is
-    /// pretty opaque, which is fine, since there's nothing you can really *do*
-    /// about an EC error (at least from userspace)
-    EcError,
 }
 
 /// Convienence type.
