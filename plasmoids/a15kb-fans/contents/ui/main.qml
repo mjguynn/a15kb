@@ -5,9 +5,6 @@ import org.kde.plasma.plasmoid 2.0
 import com.offbyond.a15kb 1.0 as A15KB
 
 Item {
-    A15KB.Controller {
-        id: controller
-    }
     function icon() {
         var cpu_temp = 90;
         if (cpu_temp < 40) {
@@ -20,9 +17,12 @@ Item {
     }
     Plasmoid.icon: icon()
     Plasmoid.fullRepresentation: ColumnLayout {
+        PlasmaComponents.Label {
+            text: A15KB.Controller.error
+        }
         PlasmaComponents.RadioButton {
             text: "Quiet"
-            onClicked: controller.set_fans_quiet()
+            onClicked: A15KB.Controller.set_fans_quiet()
             autoExclusive: true
         }
         PlasmaComponents.RadioButton {

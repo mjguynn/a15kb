@@ -1,6 +1,7 @@
 use a15kb::{Connection, FanState, Percent, DEFAULT_SOCKET_NAME};
 use cstr::cstr;
 use qmetaobject::prelude::*;
+use qmetaobject::{qml_register_singleton_type, QSingletonInit};
 use std::ffi::CStr;
 
 #[rustfmt::skip]
@@ -28,6 +29,14 @@ struct QA15KBController {
     ),
     cxn: Option<Connection>,
 }
+impl QSingletonInit for QA15KBController {
+    fn init(&mut self) {
+        match Connection::new(DEFAULT_SOCKET_NAME) {
+            Ok(cxn) => self.cxn = Some(cxn),
+            Err(err) => self.set_error(err),
+        }
+    }
+}
 impl QA15KBController {
     fn set_error(&mut self, err: impl ToString) {
         let err = err.to_string();
@@ -35,16 +44,7 @@ impl QA15KBController {
         self.error = QString::from(err);
         self.errored();
     }
-    fn lazy_init(&mut self) {
-        if self.cxn.is_none() {
-            match Connection::new(DEFAULT_SOCKET_NAME) {
-                Ok(cxn) => self.cxn = Some(cxn),
-                Err(err) => self.set_error(err),
-            }
-        }
-    }
     fn set_fans(&mut self, fan_state: FanState) {
-        self.lazy_init();
         if let Some(cxn) = self.cxn.as_mut() {
             if let Err(err) = cxn.set_fan_state(fan_state) {
                 self.set_error(err);
@@ -61,7 +61,6 @@ struct QA15KBQmlPlugin {
 impl QQmlExtensionPlugin for QA15KBQmlPlugin {
     fn register_types(&mut self, uri: &CStr) {
         assert_eq!(uri, cstr!("com.offbyond.a15kb"));
-        // TODO: use qml_register_singleton_type instead
-        qml_register_type::<QA15KBController>(uri, 1, 0, cstr!("Controller"));
+        qml_register_singleton_type::<QA15KBController>(uri, 1, 0, cstr!("Controller"));
     }
 }
