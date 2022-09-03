@@ -1,0 +1,23 @@
+{
+    "KPlugin": {
+        "Id": "a15kb-fans",
+        "Name": "A15KB Fan Control",
+        "Category": "System Information",
+        "Description": "Control the fans on a GIGABYTE™ Aero 15 KB",
+        "FormFactors": [
+            "desktop"
+        ],
+        "Icon": "temperature-normal",
+        "ServiceTypes": [
+            "Plasma/Applet"
+        ],
+        "FormFactors": [
+            "desktop"
+        ],
+        "Version": "0"
+    },
+    "X-Plasma-API": "declarativeappletscript",
+    "X-Plasma-MainScript": "ui/main.qml",
+    "X-Plasma-NotificationArea": true,
+    "X-Plasma-NotificationAreaCategory": "Hardware"
+}

@@ -6,3 +6,14 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 bincode = "2.0.0-rc.1"
+
+[dev-dependencies]
+qmetaobject = "0.2"
+cstr = "0.2"
+
+[[example]]
+name = "a15kb-repl"
+
+[[example]]
+name = "a15kb-qml-plugin"
+crate-type = ["cdylib"]
