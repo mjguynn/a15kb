@@ -1,0 +1,71 @@
+<!DOCTYPE node PUBLIC
+    "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+    "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd" >
+
+<node xmlns:doc="http://www.freedesktop.org/dbus/1.0/doc.dtd">
+  <interface name="com.offbyond.a15kb.Controller1">
+
+    <property name="AllowedFanSpeeds" type="(dd)" access="read">
+      <doc>
+        <doc:summary>The allowable (min, max) speed range for fixed-fan mode. 0.0..=1.0</doc:summary>
+        <doc:para>
+          This is a constraint on clients who attempt to set the speed, not a constraint of the hardware.
+          This means that GetThermalInfo may return a fixed fan speed outside this range.
+        </doc:para>
+        <doc:para>
+          The returned values will not change throughout the connection's lifetime.
+        </doc:para>
+      </doc>
+    </property>
+
+    <method name="GetThermalInfo">
+      <arg name="temp_cpu" direction="out" type="y">
+        <doc:doc><doc:summary>The CPU temperature, in Celcius.</doc:summary></doc:doc>
+      </arg>
+      <arg name="temp_gpu" direction="out" type="y">
+        <doc:doc>
+          <doc:summary>The dGPU temperature, in Celcius.</doc:summary>
+          <doc:para>This will report as 0 if the dGPU is powered off.</doc:para>
+        </doc:doc>
+      </arg>
+      <arg name="fan_rpm" direction="out" type="(qq)">
+        <doc:doc><doc:summary>The RPM of the left and right fans, respectively.</doc:summary></doc:doc>
+      </arg>
+      <arg name="fan_mode" direction="out" type="y">
+        <doc:doc><doc:summary>The fan mode: 0 = normal, 1 = quiet, 2 = gaming, 3 = fixed.</doc:summary></doc:doc>
+      </arg>
+      <arg name="fixed_fan_speed" direction="out" type="d">
+        <doc:doc><doc:summary>The speed of the fan when fixed speed mode is enabled. Expressed as a percent.</doc:summary></doc:doc>
+      </arg>
+      <doc:doc>
+        <doc:description>
+          <doc:summary>
+            Retrieves the laptop's current thermal information.
+          </doc:summary>
+          <doc:para>
+            Although the actual implementation is fast, D-Bus itself is slow, so don't call this too often.
+          </doc:para>
+        </doc:description>
+      </doc:doc>
+    </method> 
+
+    <method name="SetFanMode">
+      <arg name="fan_mode" direction="in" type="y">
+        <doc:doc><doc:summary>The fan mode: 0 = normal, 1 = quiet, 2 = gaming, 3 = fixed.</doc:summary></doc:doc>
+      </arg>
+      <doc:doc>
+        <doc:description><doc:summary>Sets the hardware fan mode.</doc:summary></doc:description>
+      </doc:doc>
+    </method>
+
+    <method name="SetFixedFanSpeed">
+      <arg name="fixed_fan_speed" direction="in" type="d">
+        <doc:doc><doc:summary>The fixed fan speed, expressed as a percent.</doc:summary></doc:doc>
+      </arg>
+      <doc:doc>
+        <doc:description><doc:summary>Sets the fixed fan speed (used in fixed fan mode)</doc:summary></doc:description>
+      </doc:doc>
+    </method>
+
+  </interface>
+</node>

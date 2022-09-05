@@ -1,14 +1,28 @@
 use super::*;
 use anyhow::{ensure, Context};
+use dbus::blocking::Connection;
+use dbus_crossroads::Crossroads;
 use std::fs;
 use std::io;
 use std::io::{Read, Seek, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{self, UnixStream};
-use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
-use std::thread;
+
+/// An error which occurred at the level of the embedded controller. This is
+/// opaque, which is fine, since there's nothing you can really *do* about an
+/// EC error (at least from userspace)
+#[derive(Debug)]
+struct EcError;
+impl std::fmt::Display for EcError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("error communicating with embedded controller")
+    }
+}
+impl std::error::Error for EcError {}
+impl From<EcError> for dbus::MethodErr {
+    fn from(err: EcError) -> Self {
+        dbus::MethodErr::failed(&err)
+    }
+}
 
 /// Just eprintln but with locked stderr (so threads don't trample on each others' messages)
 macro_rules! log {
@@ -23,177 +37,108 @@ macro_rules! log {
 
 /// Convienence macro that logs the error before returning EcError
 macro_rules! ec_error {
-	($($tok:tt)*) => {
-		{
+    ($($tok:tt)*) => {
+        {
             let id = ::std::thread::current().id();
-			let msg = format!($($tok)*);
-	       	log!("[warn]({:?}){}", id, msg);
-	       	Err(InternalError::EcError {})
-	    }
-	}
+            let msg = format!($($tok)*);
+               log!("[warn]({:?}){}", id, msg);
+               Err(EcError {})
+        }
+    }
 }
 
-/// Runs the a15kb server.
-pub fn run_server(socket_name: &Path) -> Result<(), anyhow::Error> {
-    // Access the embedded controller and prepare it for multithreaded access.
-    let ec = Arc::new(Mutex::new(Ec::new()?));
+#[allow(clippy::type_complexity)]
+mod server_generated {
+    include! { concat!(env!("OUT_DIR"), "/server_generated.rs") }
+}
 
-    // Create the socket directory if it doesn't already exist.
-    if let Err(err) = fs::create_dir(SOCKET_DIR) {
-        ensure!(
-            err.kind() == io::ErrorKind::AlreadyExists,
-            "couldn't create socket directory"
-        );
-    }
+/// The configuration for the a15kb server.
+#[derive(Debug, Default)]
+pub struct ServerCfg {
+    /// Whether to replace the existing service, if one exists.
+    pub replace: bool,
+}
 
-    // Make sure everyone has R/X permissions for that directory.
-    // Only we (the server) should have write permissions.
-    let rx = fs::Permissions::from_mode(0o755);
-    fs::set_permissions(SOCKET_DIR, rx).context("couldn't set socket directory permissions")?;
+/// Runs the a15kb server with the configuration given by `cfg`.
+pub fn run_server(cfg: &ServerCfg) -> Result<(), anyhow::Error> {
+    // Set up our controller
+    let controller = Controller::new()?;
 
-    let mut path = PathBuf::from(SOCKET_DIR);
-    path.push(socket_name);
+    // Connect to the system bus & grab the name
+    // If we can't grab it, just error out, don't stall in the queue
+    let cxn = Connection::new_system().context("couldn't connect to system bus")?;
+    cxn.request_name(BUS_NAME, true, cfg.replace, true)
+        .context("couldn't obtain bus name")?;
 
-    // Remove the socket file if it already exists.
-    if let Err(err) = fs::remove_file(&path) {
-        ensure!(
-            err.kind() == io::ErrorKind::NotFound,
-            "couldn't remove existing socket"
-        );
-    }
+    // Set up our D-Bus object
+    let mut cr = Crossroads::new();
+    let token = server_generated::register_com_offbyond_a15kb_controller1(&mut cr);
+    cr.insert("/com/offbyond/a15kb/Controller1", &[token], controller);
 
-    let listener = net::UnixListener::bind(&path).context("couldn't bind socket")?;
-
-    let rw = fs::Permissions::from_mode(0o766);
-    fs::set_permissions(&path, rw).context("couldn't set socket file permissions")?;
-
+    // Let's go!
     eprintln!("[info] server started");
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let ec = Arc::clone(&ec);
-                thread::spawn(move || handle_connection(stream, ec));
-            }
-            Err(err) => log!("[warn] client connection failed: {err}"),
-        }
-    }
-
-    unreachable!("UnixListener::incoming never returns None")
+    cr.serve(&cxn)?;
+    eprintln!("[info] server stopped");
+    Ok(())
 }
 
-/// Handles a connection request-by-request until `handle_request` says it should stop.
-fn handle_connection(mut stream: UnixStream, ec: Arc<Mutex<Ec>>) {
-    let id = thread::current().id();
-    println!("[info]({id:?}) client connected");
-    while !handle_request(&mut stream, &ec) {}
-    println!("[info]({id:?}) client disconnected");
+/// A D-Bus compatible, high-level wrapper around the raw embedded controller
+struct Controller {
+    ec: Ec,
 }
-
-/// Handles the next request from the stream. Returns whether the server should terminate the
-/// connection.
-fn handle_request(stream: &mut UnixStream, ec: &Mutex<Ec>) -> bool {
-    let request = bincode::decode_from_std_read(stream, BINCODE_CONFIG);
-    match request {
-        Ok(Request::GetThermalInfo) => send_response(get_thermal_info(ec), stream),
-        Ok(Request::SetFanState(fan_state)) => send_response(set_fan_state(ec, fan_state), stream),
-        // reached end of stream unexpectedly, terminate connection
-        Err(bincode::error::DecodeError::UnexpectedEnd) => return true,
-        Err(_) => {
-            let _ = bincode::encode_into_std_write(
-                ResponseHeader::InternalError(InternalError::CouldNotDecode),
-                stream,
-                BINCODE_CONFIG,
-            );
-        }
-    }
-    return false;
-}
-
-/// Sends `response` with the appropriate headers. Discards errors.
-fn send_response<T: Encode>(response: InternalResult<T>, stream: &mut UnixStream) {
-    match response {
-        Ok(val) => {
-            let _ = bincode::encode_into_std_write(ResponseHeader::Success, stream, BINCODE_CONFIG);
-            let _ = bincode::encode_into_std_write(val, stream, BINCODE_CONFIG);
-        }
-        Err(err) => {
-            let _ = bincode::encode_into_std_write(
-                ResponseHeader::InternalError(err),
-                stream,
-                BINCODE_CONFIG,
-            );
-        }
+impl Controller {
+    pub fn new() -> Result<Self, anyhow::Error> {
+        Ok(Self {
+            ec: Ec::new().context("error setting up embedded controller")?,
+        })
     }
 }
-
-/// Attempts to retrieve the laptop's thermal information.
-fn get_thermal_info(ec: &Mutex<Ec>) -> InternalResult<ThermalInfo> {
-    // It's unacceptable for this function to panic! The mutex will be poisoned and the `unwrap`
-    // will fail, bringing down all other connections in a cascade of panics!
-    let mut ec = ec.lock().unwrap();
-    let temp_cpu = ec.temp_cpu()?;
-    let temp_gpu = ec.temp_gpu()?;
-    let fan_rpm = ec.fan_rpm()?;
-    let fan_speed_range = {
-        let fan_speed_min = Percent::try_from(FAN_FIXED_SPEED_MIN).unwrap();
-        let fan_speed_max = Percent::try_from(1.0).unwrap();
-        fan_speed_min..=fan_speed_max
-    };
-    let fan_speed_fixed = {
-        let (hw0, hw1) = ec.fan_fixed_hw_speeds()?;
-        let fl0 = (hw0 as f32) / (HW_MAX_FAN_SPEED as f32);
-        let fl1 = (hw1 as f32) / (HW_MAX_FAN_SPEED as f32);
-        let cvt0 = Percent::try_from(fl0).expect("hw0 was literally JUST unsigned");
-        let cvt1 = Percent::try_from(fl1).expect("hw1 was literally JUST unsigned");
-        Percent::avg(cvt0, cvt1)
-    };
-    let fan_state = match ec.fan_modes()? {
-        // (quiet, gaming, fixed)
-        (false, false, false) => Some(FanState::Normal),
-        (true, false, false) => Some(FanState::Quiet),
-        (false, true, false) => Some(FanState::Aggressive),
-        (true, true, false) => None, // quiet AND gaming?
-        (_, _, true) => Some(FanState::Fixed(fan_speed_fixed)),
-    };
-    Ok(ThermalInfo {
-        temp_cpu,
-        temp_gpu,
-        fan_rpm,
-        fan_speed_range,
-        fan_speed_fixed,
-        fan_state,
-    })
-}
-
-/// Attempts to set the laptop's fan state.
-fn set_fan_state(ec: &Mutex<Ec>, fan_state: FanState) -> InternalResult<FanChangeResponse> {
-    // It's unacceptable for this function to panic! The mutex will be poisoned and the `unwrap`
-    // will fail, bringing down all other connections in a cascade of panics!
-    let mut ec = ec.lock().unwrap();
-
-    if let FanState::Fixed(speed) = fan_state {
-        let allowed = {
-            let min = Percent::try_from(FAN_FIXED_SPEED_MIN).unwrap();
-            let max = Percent::try_from(FAN_FIXED_SPEED_MAX).unwrap();
-            min..=max
+impl server_generated::ComOffbyondA15kbController1 for Controller {
+    fn get_thermal_info(&mut self) -> Result<(u8, u8, (u16, u16), u8, f64), dbus::MethodErr> {
+        let temp_cpu = self.ec.temp_cpu()?;
+        let temp_gpu = self.ec.temp_gpu()?;
+        let fan_rpm = self.ec.fan_rpm()?;
+        let fan_state = match self.ec.fan_modes()? {
+            // (quiet, gaming, fixed)
+            // TODO: better way to keep this in check with FanMode?
+            (false, false, false) => 0,
+            (true, false, false) => 1,
+            (false, true, false) => 2,
+            (true, true, false) => u8::MAX, // quiet AND gaming?
+            (_, _, true) => 3,
         };
-        if !allowed.contains(&speed) {
-            return Ok(FanChangeResponse::UnsafeSpeed(allowed));
-        }
-        let fhw_speed = speed.as_f32() * (HW_MAX_FAN_SPEED as f32);
-        let hw_speed = fhw_speed as u8;
-        ec.set_fan_fixed_hw_speeds((hw_speed, hw_speed))?;
+        let fixed_fan_speed = {
+            // TODO: Maybe expose each fan's speed individually?
+            let (hw0, hw1) = self.ec.fan_fixed_hw_speeds()?;
+            let fl0 = (hw0 as f64) / (HW_MAX_FAN_SPEED as f64);
+            let fl1 = (hw1 as f64) / (HW_MAX_FAN_SPEED as f64);
+            0.5 * (fl0 + fl1)
+        };
+        Ok((temp_cpu, temp_gpu, fan_rpm, fan_state, fixed_fan_speed))
     }
-    // Set the fan modes after the fan state
-    let fan_modes = match fan_state {
-        // (quiet, gaming, fixed)
-        FanState::Normal => (false, false, false),
-        FanState::Quiet => (true, false, false),
-        FanState::Aggressive => (false, true, false),
-        FanState::Fixed(_) => (false, false, true),
-    };
-    ec.set_fan_modes(fan_modes)?;
-    Ok(FanChangeResponse::Success)
+    fn set_fan_mode(&mut self, fan_mode: u8) -> Result<(), dbus::MethodErr> {
+        let settings = match FanMode::from_discriminant(fan_mode) {
+            Some(FanMode::Quiet) => (true, false, false),
+            Some(FanMode::Normal) => (false, false, false),
+            Some(FanMode::Gaming) => (false, true, false),
+            Some(FanMode::Fixed) => (false, false, true),
+            None => return Err(dbus::MethodErr::invalid_arg(&fan_mode)),
+        };
+        self.ec.set_fan_modes(settings)?;
+        Ok(())
+    }
+    fn set_fixed_fan_speed(&mut self, fixed_fan_speed: f64) -> Result<(), dbus::MethodErr> {
+        if !(FAN_FIXED_SPEED_MIN..=FAN_FIXED_SPEED_MAX).contains(&fixed_fan_speed) {
+            return Err(dbus::MethodErr::invalid_arg(&fixed_fan_speed));
+        }
+        let fhw_speed = fixed_fan_speed * (HW_MAX_FAN_SPEED as f64);
+        let hw_speed = fhw_speed as u8;
+        self.ec.set_fan_fixed_hw_speeds((hw_speed, hw_speed))?;
+        Ok(())
+    }
+    fn allowed_fan_speeds(&self) -> Result<(f64, f64), dbus::MethodErr> {
+        Ok((FAN_FIXED_SPEED_MIN, FAN_FIXED_SPEED_MAX))
+    }
 }
 
 /// The maximum integer speed of the fan. [Source.][source]
@@ -202,10 +147,10 @@ fn set_fan_state(ec: &Mutex<Ec>, fan_state: FanState) -> InternalResult<FanChang
 const HW_MAX_FAN_SPEED: u8 = 229;
 
 /// The minimum allowable fixed fan speed
-const FAN_FIXED_SPEED_MIN: f32 = 0.3;
+const FAN_FIXED_SPEED_MIN: f64 = 0.3;
 
 /// The maximum allowable fixed fan speed
-const FAN_FIXED_SPEED_MAX: f32 = 1.0;
+const FAN_FIXED_SPEED_MAX: f64 = 1.0;
 
 /// Offsets (and possibly bit indices) of EC registers.
 mod offs {
@@ -234,7 +179,7 @@ mod offs {
 }
 
 /// Convienence type.
-type InternalResult<T> = Result<T, InternalError>;
+type EcResult<T> = Result<T, EcError>;
 
 /// A wrapper around the embedded controller.
 struct Ec {
@@ -288,7 +233,7 @@ impl Ec {
     ///
     /// # Safety
     /// This is *probably* safe, even on invalid hardware. Still, treat it as if it could brick your computer.
-    unsafe fn set_offset(&mut self, offset: u64) -> InternalResult<()> {
+    unsafe fn set_offset(&mut self, offset: u64) -> EcResult<()> {
         match self.inner.seek(io::SeekFrom::Start(offset)) {
             Ok(pos) if pos == offset => Ok(()),
             Ok(_) => ec_error!("failed to access EC: seek error"),
@@ -299,7 +244,7 @@ impl Ec {
     ///
     /// # Safety
     /// This is *probably* safe, even on invalid hardware. Still, treat it as if it could brick your computer.
-    unsafe fn read_bytes(&mut self, offset: u64, buffer: &mut [u8]) -> InternalResult<()> {
+    unsafe fn read_bytes(&mut self, offset: u64, buffer: &mut [u8]) -> EcResult<()> {
         self.set_offset(offset)?;
         match self.inner.read(buffer) {
             Ok(num_read) if num_read == buffer.len() => Ok(()),
@@ -312,7 +257,7 @@ impl Ec {
     ///
     /// # Safety
     /// Same as [`read_bytes`].
-    unsafe fn read_byte(&mut self, offset: u64) -> InternalResult<u8> {
+    unsafe fn read_byte(&mut self, offset: u64) -> EcResult<u8> {
         let mut byte = 0u8;
         self.read_bytes(offset, std::slice::from_mut(&mut byte))?;
         Ok(byte)
@@ -325,7 +270,7 @@ impl Ec {
     ///
     /// # Safety
     /// Same as [`read_bytes`].
-    unsafe fn read_bit(&mut self, (offset, bit): (u64, u8)) -> InternalResult<bool> {
+    unsafe fn read_bit(&mut self, (offset, bit): (u64, u8)) -> EcResult<bool> {
         let byte = self.read_byte(offset)?;
         let shifted = byte.checked_shr(bit.into()).expect("invalid bit index");
         let extracted = shifted & 1;
@@ -333,17 +278,17 @@ impl Ec {
     }
 
     /// Returns the CPU temperature in degrees Celcius.
-    fn temp_cpu(&mut self) -> InternalResult<u8> {
+    fn temp_cpu(&mut self) -> EcResult<u8> {
         unsafe { self.read_byte(offs::TEMP_CPU) }
     }
 
     /// Returns the GPU temperature in degrees Celcius. This will return `0` if the GPU is powered off.
-    fn temp_gpu(&mut self) -> InternalResult<u8> {
+    fn temp_gpu(&mut self) -> EcResult<u8> {
         unsafe { self.read_byte(offs::TEMP_GPU) }
     }
 
     /// Returns the RPMs of the left and right fans, respectively.
-    fn fan_rpm(&mut self) -> InternalResult<(u16, u16)> {
+    fn fan_rpm(&mut self) -> EcResult<(u16, u16)> {
         let (mut rpm0, mut rpm1) = ([0u8, 0u8], [0u8, 0u8]);
         unsafe {
             self.read_bytes(offs::FAN_RPM_0, &mut rpm0)?;
@@ -358,7 +303,7 @@ impl Ec {
     /// Only one of the fan modes *should* be set, but it's possible that
     /// some other software (or firmware!) snuck behind our back and threw
     /// the fans into an invalid state.
-    fn fan_modes(&mut self) -> InternalResult<(bool, bool, bool)> {
+    fn fan_modes(&mut self) -> EcResult<(bool, bool, bool)> {
         let quiet = unsafe { self.read_bit(offs::FAN_QUIET)? };
         let gaming = unsafe { self.read_bit(offs::FAN_GAMING)? };
         let fixed = unsafe { self.read_bit(offs::FAN_FIXED)? };
@@ -368,7 +313,7 @@ impl Ec {
     /// Returns the fixed hardware speed of the left and right fans,
     /// respectively. This works even when the fan isn't in fixed-speed
     /// mode.
-    fn fan_fixed_hw_speeds(&mut self) -> InternalResult<(u8, u8)> {
+    fn fan_fixed_hw_speeds(&mut self) -> EcResult<(u8, u8)> {
         let fan0 = unsafe { self.read_byte(offs::FAN_FIXED_HW_SPEED_0)? };
         let fan1 = unsafe { self.read_byte(offs::FAN_FIXED_HW_SPEED_1)? };
         Ok((fan0, fan1))
@@ -378,7 +323,7 @@ impl Ec {
     ///
     /// # Safety
     /// This could brick your computer.
-    unsafe fn write_bytes(&mut self, offset: u64, buffer: &[u8]) -> InternalResult<()> {
+    unsafe fn write_bytes(&mut self, offset: u64, buffer: &[u8]) -> EcResult<()> {
         self.set_offset(offset)?;
         match self.inner.write(buffer) {
             Ok(num_read) if num_read == buffer.len() => Ok(()),
@@ -391,7 +336,7 @@ impl Ec {
     ///
     /// # Safety
     /// Same as [`write_bytes`].
-    unsafe fn write_byte(&mut self, offset: u64, byte: u8) -> InternalResult<()> {
+    unsafe fn write_byte(&mut self, offset: u64, byte: u8) -> EcResult<()> {
         self.write_bytes(offset, std::slice::from_ref(&byte))
     }
 
@@ -402,7 +347,7 @@ impl Ec {
     ///
     /// # Safety
     /// Same as [`write_bytes`].
-    unsafe fn write_bit(&mut self, (offset, bit): (u64, u8), val: bool) -> InternalResult<()> {
+    unsafe fn write_bit(&mut self, (offset, bit): (u64, u8), val: bool) -> EcResult<()> {
         let byte = self.read_byte(offset)?;
         let shifted = 1u8.checked_shl(bit.into()).expect("invalid bit index");
         let changed = if val { byte | shifted } else { byte & !shifted };
@@ -414,7 +359,7 @@ impl Ec {
     /// # Panics
     /// Panics if `quiet && gaming`, since I haven't tested that combo yet and I'm afraid to do so.
     /// AFAIK there's no reason to want to set that anyways.
-    fn set_fan_modes(&mut self, (quiet, gaming, fixed): (bool, bool, bool)) -> InternalResult<()> {
+    fn set_fan_modes(&mut self, (quiet, gaming, fixed): (bool, bool, bool)) -> EcResult<()> {
         assert!(!(quiet && gaming));
         unsafe {
             self.write_bit(offs::FAN_QUIET, quiet)?;
@@ -427,7 +372,7 @@ impl Ec {
     ///
     /// # Panics
     /// Panics if either speed is greater than [`HW_MAX_FAN_SPEED`].
-    fn set_fan_fixed_hw_speeds(&mut self, (fan0, fan1): (u8, u8)) -> InternalResult<()> {
+    fn set_fan_fixed_hw_speeds(&mut self, (fan0, fan1): (u8, u8)) -> EcResult<()> {
         assert!(fan0 <= HW_MAX_FAN_SPEED);
         assert!(fan1 <= HW_MAX_FAN_SPEED);
         unsafe {

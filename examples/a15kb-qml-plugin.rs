@@ -1,4 +1,4 @@
-use a15kb::{Connection, FanState, Percent, DEFAULT_SOCKET_NAME};
+use a15kb::{Client, FanMode, Percent};
 use cstr::cstr;
 use qmetaobject::prelude::*;
 use qmetaobject::{qml_register_singleton_type, QSingletonInit};
@@ -11,28 +11,25 @@ struct QA15KBController {
     error: qt_property!(QString; NOTIFY errored),
     errored: qt_signal!(),
     set_fans_quiet: qt_method!(
-        fn set_fans_quiet(&mut self) {self.set_fans(FanState::Quiet)}
+        fn set_fans_quiet(&mut self) {todo!()}
     ),
     set_fans_normal: qt_method!(
-        fn set_fans_normal(&mut self) {self.set_fans(FanState::Normal)}
+        fn set_fans_normal(&mut self) {todo!()}
     ),
     set_fans_aggressive: qt_method!(
-        fn set_fans_aggressive(&mut self) {self.set_fans(FanState::Aggressive)}
+        fn set_fans_aggressive(&mut self) {todo!()}
     ),
     set_fans_fixed: qt_method!(
-        fn set_fans_fixed(&mut self, pcnt: f32) {
-            match Percent::try_from(pcnt) {
-                Ok(pcnt) => self.set_fans(FanState::Fixed(pcnt)),
-                Err(_) => self.set_error("invalid fan percentage")
-            }
+        fn set_fans_fixed(&mut self, pcnt: f64) {
+            todo!()
         }
     ),
-    cxn: Option<Connection>,
+    client: Option<Client>,
 }
 impl QSingletonInit for QA15KBController {
     fn init(&mut self) {
-        match Connection::new(DEFAULT_SOCKET_NAME) {
-            Ok(cxn) => self.cxn = Some(cxn),
+        match Client::new() {
+            Ok(client) => self.client = Some(client),
             Err(err) => self.set_error(err),
         }
     }
@@ -44,9 +41,9 @@ impl QA15KBController {
         self.error = QString::from(err);
         self.errored();
     }
-    fn set_fans(&mut self, fan_state: FanState) {
-        if let Some(cxn) = self.cxn.as_mut() {
-            if let Err(err) = cxn.set_fan_state(fan_state) {
+    fn set_fan_mode(&mut self, fan_mode: FanMode) {
+        if let Some(client) = self.client.as_mut() {
+            if let Err(err) = client.set_fan_mode(fan_mode) {
                 self.set_error(err);
             }
         }

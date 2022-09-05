@@ -1,15 +1,13 @@
 #![cfg(target_os = "linux")]
-use anyhow::{bail, Context};
-use std::path::Path;
+use anyhow::{bail, Error};
 
-pub fn main() -> Result<(), anyhow::Error> {
+pub fn main() -> Result<(), Error> {
     let mut args = std::env::args();
-    let socket_name = match args.nth(1).as_deref() {
-        Some("--socket-name") => args
-            .next()
-            .context("--socket-name must be followed by a socket name")?,
+    let replace = match args.nth(1).as_deref() {
+        Some("--replace") => true,
         Some(_) => bail!("unknown argument"),
-        None => a15kb::DEFAULT_SOCKET_NAME.to_string(),
+        None => false,
     };
-    a15kb::run_server(Path::new(socket_name.as_str()))
+    let cfg = a15kb::ServerCfg { replace };
+    a15kb::run_server(&cfg)
 }

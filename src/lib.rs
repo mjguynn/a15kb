@@ -2,10 +2,11 @@
 //! Controlling the hardware of a GIGABYTE Aero 15 KB.
 //!
 //! # Overview
-//! [`a15kb`] is implemented using a client-server model. The server is launched with root
-//! privileges. It loads the `ec_sys` kernel module to communicate with the laptop's embedded
-//! controller, then opens an Unix domain socket within `/var/a15kb/`. Clients run at any privilege
-//! level. They connect to the socket, submit requests to the server, and receive responses.
+//! [`a15kb`] is implemented using a client-server model. The server is
+//! launched with root privileges. It loads the `ec_sys` kernel module to
+//! communicate with the laptop's embedded controller and opens a D-bus
+//! connection. Clients run at any privilege level. They connect to the
+//! socket, submit requests to the server, and receive responses.
 //!
 //! # Notes
 //! Running multiple servers at once probably isn't a good idea. I'm unsure whether concurrent
@@ -13,60 +14,80 @@
 //! race (which could be disasterous). My bet's on serialization, but I'm too afraid to test it.
 //!
 //! I'd like to support Windows, however...
-//! 	- You can't access the embedded controller in Windows without a kernel driver. Most people
-//!		  seem to use [WinRing0x64.sys], but it's flagged as malware by many AV vendors. (Hell,
-//!		  maybe it is malware. I can't find the source for it.)
-//!		- [aeroctl] is an existing solution for controlling Aero fans on Windows. (They hijack the
-//!		  existing Gigabyte ACPI WMI driver instead of installing their own kernel driver, which
-//!		  is a much more clever way to gain fan access.)
+//!     - You can't access the embedded controller in Windows without a kernel driver. Most people
+//!       seem to use [WinRing0x64.sys], but it's flagged as malware by many AV vendors. (Hell,
+//!       maybe it is malware. I can't find the source for it.)
+//!     - [aeroctl] is an existing solution for controlling Aero fans on Windows. (They hijack the
+//!       existing Gigabyte ACPI WMI driver instead of installing their own kernel driver, which
+//!       is a much more clever way to gain fan access.)
 //!
 //! [aeroctl]: https://gitlab.com/wtwrp/aeroctl/
 //! [WinRing0x64.sys]: https://github.com/Soberia/EmbeddedController/blob/main/WinRing0x64.sys
 
-use bincode::error::{DecodeError, EncodeError};
-use bincode::{Decode, Encode};
-use std::error::Error;
+use dbus::blocking::{Connection, Proxy};
 use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
-use std::os::unix::net;
-use std::path::PathBuf;
+use std::time::Duration;
 
 mod server;
 
+#[allow(clippy::type_complexity)]
+#[allow(clippy::needless_borrow)]
+mod client_generated {
+    include! { concat!(env!("OUT_DIR"), "/client_generated.rs") }
+}
+use client_generated::ComOffbyondA15kbController1;
+
 pub use server::run_server;
+pub use server::ServerCfg;
 
-/// The socket directory. Unlike the socket name, this is static and cannot be changed.
-pub const SOCKET_DIR: &'static str = "/run/a15kb";
-
-/// The filename of the listening socket in [`SOCKET_DIR`]. This can be changed by running the
-/// server with `--socket-name [name]`.
-pub const DEFAULT_SOCKET_NAME: &'static str = "default.sock";
+/// The name of the service, which always resides on the system bus.
+pub const BUS_NAME: &str = "com.offbyond.a15kb";
 
 /// Laptop fan mode.
-#[derive(Debug, Clone, Copy, PartialEq, Decode, Encode)]
-pub enum FanState {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FanMode {
     /// Quiet fans. May temporarily turn off the fan, thermal-throttle the CPU, and disable
     /// Turboboost.
     Quiet,
     /// Normal fans.
     Normal,
-    /// Aggressive/"gaming" fans.
-    Aggressive,
+    /// Aggressive "gaming" fans.
+    Gaming,
     /// A fixed, user-controlled fan speed.
-    Fixed(Percent),
+    Fixed,
 }
 
-/// The server's response to requesting a change in fan mode.
-#[derive(Debug, Decode, Encode)]
-pub enum FanChangeResponse {
-    /// The fan mode was changed succesfully.
-    Success,
-    /// The requested fixed fan speed was outside of the allowable speed range.
-    UnsafeSpeed(RangeInclusive<Percent>),
+impl FanMode {
+    /// Converts a numeric discriminant into its corresponding
+    /// [`FanMode`]. Returns [`None`] in the case of an unrecognized
+    /// discriminant. The valid discriminants are:
+    /// - `0`: [Quiet](`self::FanMode#variant.Quiet`)
+    /// - `1`: [Normal](`self::FanMode#variant.Normal`)
+    /// - `2`: [Gaming](`self::FanMode#variant.Gaming`)
+    /// - `3`: [Fixed](`self::FanMode#variant.Fixed`)
+    fn from_discriminant(discriminant: u8) -> Option<Self> {
+        match discriminant {
+            0 => Some(Self::Quiet),
+            1 => Some(Self::Normal),
+            2 => Some(Self::Gaming),
+            3 => Some(Self::Fixed),
+            _ => None,
+        }
+    }
+    /// The inverse of [from_discriminant][`FanMode#method.from_discriminant`]
+    fn to_discriminant(self) -> u8 {
+        match self {
+            Self::Quiet => 0,
+            Self::Normal => 1,
+            Self::Gaming => 2,
+            Self::Fixed => 3,
+        }
+    }
 }
 
 /// The current thermal state of the system.
-#[derive(Debug, Decode, Encode)]
+#[derive(Debug)]
 pub struct ThermalInfo {
     /// The CPU temperature, in Celcius.
     pub temp_cpu: Celcius,
@@ -77,110 +98,99 @@ pub struct ThermalInfo {
     /// The RPM of the left and right fans, respectively.
     pub fan_rpm: (u16, u16),
 
-    /// The fan speeds permitted by the server.
-    pub fan_speed_range: RangeInclusive<Percent>,
+    /// The current fan mode, or `None` if the fan mode is unrecognized.
+    pub fan_mode: Option<FanMode>,
 
-    /// The fixed fan speed. If the fan state is `FanState::Fixed(u)` then `u == fan_speed_fixed`.
-    /// This is duplicated outside of `fan_state` since it might be useful to know what the fixed
-    /// fan speed was set to even if you're not using the fixed fan mode.
-    pub fan_speed_fixed: Percent,
-
-    /// The current fan mode. This is `None` if the fan is in an invalid state.
-    pub fan_state: Option<FanState>,
+    /// The fixed fan speed. This is only used when the fan is in fixed mode.
+    pub fixed_fan_speed: Percent,
 }
 
-/// Represents any error which occurred while submitting a request to the server,
-/// retrieving the server's response, or conained in the server's response.
-#[derive(Debug)]
-pub enum ExchangeError {
-    /// An error occurred while submitting a request.
-    RequestError(EncodeError),
-    /// An error occurred while reading the response.
-    ResponseError(DecodeError),
-    /// The server encountered an internal error preventing it from doing its job.
-    InternalError(InternalError),
-}
-
-/// The server encountered an internal error preventing it from doing its job.
-#[derive(Debug, Clone, Copy, Decode, Encode)]
-pub enum InternalError {
-    /// An error which occurred at the level of the embedded controller. This is
-    /// pretty opaque, which is fine, since there's nothing you can really *do*
-    /// about an EC error (at least from userspace)
-    EcError,
-    /// The client's request could not be decoded.
-    CouldNotDecode,
-}
-impl Display for InternalError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EcError => write!(f, "error accessing embedded controller"),
-            Self::CouldNotDecode => write!(f, "server could not decode client request"),
-        }
-    }
-}
-impl Error for InternalError {}
+type ClientResult<T> = Result<T, dbus::Error>;
 
 /// Represents a client connection to the a15kb server.
-pub struct Connection {
-    stream: net::UnixStream,
+pub struct Client {
+    conn: Connection,
 }
-impl Connection {
-    /// Creates a new connection to the server at `/var/a15kb/{socket_name}`.
-    /// If you're unsure which socket name to use, try [`SOCKET_NAME`].
-    pub fn new(socket_name: &str) -> Result<Self, std::io::Error> {
-        let mut path = PathBuf::from(SOCKET_DIR);
-        path.push(socket_name);
-        net::UnixStream::connect(path).map(|stream| Self { stream })
+impl Client {
+    /// Creates a new client which lies dormant on the system bus.
+    pub fn new() -> ClientResult<Self> {
+        Ok(Self {
+            conn: Connection::new_system()?,
+        })
+    }
+
+    fn with_proxy<F, T>(&self, mut f: F) -> ClientResult<T>
+    where
+        F: FnMut(&Proxy<&'_ Connection>) -> ClientResult<T>,
+    {
+        const TIMEOUT: Duration = Duration::from_millis(1000);
+        let proxy = self.conn.with_proxy(BUS_NAME, "/", TIMEOUT);
+        f(&proxy)
+    }
+
+    /// Requests the server's allowable fan speeds.
+    pub fn allowed_fan_speeds(&self) -> ClientResult<RangeInclusive<Percent>> {
+        self.with_proxy(|proxy| {
+            let (min, max) = proxy.allowed_fan_speeds()?;
+            let min = Percent::try_from(min)
+                .map_err(|_| dbus::Error::new_failed("invalid min fan speed"))?;
+            let max = Percent::try_from(max)
+                .map_err(|_| dbus::Error::new_failed("invalid max fan speed"))?;
+            if min > max {
+                Err(dbus::Error::new_failed("reversed speed range"))
+            } else {
+                Ok(min..=max)
+            }
+        })
     }
 
     /// Requests thermal information from the server. This is a blocking call.
-    pub fn thermal_info(&mut self) -> ExchangeResult<ThermalInfo> {
-        self.encode(Request::GetThermalInfo {})?;
-        self.decode()
+    pub fn thermal_info(&self) -> ClientResult<ThermalInfo> {
+        self.with_proxy(|proxy| {
+            let (temp_cpu, temp_gpu, fan_rpm, fan_mode, fixed_fan_speed) =
+                proxy.get_thermal_info()?;
+            let fixed_fan_speed = Percent::try_from(fixed_fan_speed)
+                .map_err(|_| dbus::Error::new_failed("invalid fan speed"))?;
+            let fan_mode = FanMode::from_discriminant(fan_mode);
+            Ok(ThermalInfo {
+                temp_cpu,
+                temp_gpu,
+                fan_rpm,
+                fan_mode,
+                fixed_fan_speed,
+            })
+        })
     }
 
-    /// Requests to set the hardware fan state. This is a blocking call.
-    pub fn set_fan_state(&mut self, fan_state: FanState) -> ExchangeResult<FanChangeResponse> {
-        self.encode(Request::SetFanState(fan_state))?;
-        self.decode()
+    /// Requests to set the fan mode. This is a blocking call.
+    pub fn set_fan_mode(&self, fan_mode: FanMode) -> ClientResult<()> {
+        self.with_proxy(|proxy| proxy.set_fan_mode(fan_mode.to_discriminant()))
     }
 
-    /// Submits a raw [`Request`] to the socket. This is a blocking call.
-    fn encode(&mut self, rq: Request) -> ExchangeResult<()> {
-        bincode::encode_into_std_write(rq, &mut self.stream, BINCODE_CONFIG)?;
-        Ok(())
-    }
-    /// Attempts to decode a value of type `T` from the socket. This is a blocking call.
-    fn decode<T: Decode>(&mut self) -> ExchangeResult<T> {
-        let header = bincode::decode_from_std_read(&mut self.stream, BINCODE_CONFIG)?;
-        match header {
-            ResponseHeader::Success => (),
-            ResponseHeader::InternalError(err) => return Err(ExchangeError::InternalError(err)),
-        }
-        let payload = bincode::decode_from_std_read(&mut self.stream, BINCODE_CONFIG)?;
-        Ok(payload)
+    /// Requests to set the fixed fan speed. This is a blocking call. The
+    /// specified value should be in the server's acceptable range, which can
+    /// be retrieved by calling [`allowed_fan_speeds`].
+    ///
+    /// [`allowed_fan_speeds`]: self::FanMode#method.allowed_fan_speeds
+    pub fn set_fixed_fan_speed(&self, fixed_fan_speed: Percent) -> ClientResult<()> {
+        self.with_proxy(|proxy| proxy.set_fixed_fan_speed(fixed_fan_speed.as_f64()))
     }
 }
 
 pub type Celcius = u8;
 
-/// A newtype wrapper around an `f32` which ensures the wrapped value is positive.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Decode, Encode)]
-pub struct Percent(f32);
+/// A newtype wrapper around an `f64` which ensures the wrapped value is positive.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Percent(f64);
 
 impl Percent {
     /// Creates a percent if the given value is positive.
-    pub fn new(value: f32) -> Option<Self> {
+    pub fn new(value: f64) -> Option<Self> {
         value.is_sign_positive().then_some(Self(value))
     }
     /// Returns the wrapped float.
-    pub const fn as_f32(self) -> f32 {
+    pub const fn as_f64(self) -> f64 {
         self.0
-    }
-    /// Returns the averages of two percents.
-    pub fn avg(a: Percent, b: Percent) -> Percent {
-        Self(0.5 * (a.0 + b.0))
     }
 }
 
@@ -190,9 +200,9 @@ impl Display for Percent {
         f.write_str("%")
     }
 }
-impl From<Percent> for f32 {
+impl From<Percent> for f64 {
     fn from(value: Percent) -> Self {
-        value.as_f32()
+        value.as_f64()
     }
 }
 
@@ -200,68 +210,9 @@ impl From<Percent> for f32 {
 #[derive(Debug)]
 pub struct FromPercentError;
 
-impl TryFrom<f32> for Percent {
+impl TryFrom<f64> for Percent {
     type Error = FromPercentError;
-    fn try_from(value: f32) -> Result<Self, Self::Error> {
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
         Self::new(value).ok_or(FromPercentError {})
-    }
-}
-
-/// A request that the client sends to the server.
-#[derive(Decode, Encode)]
-enum Request {
-    /// Retrieves thermal information. Success type: [`ThermalInfo`]
-    GetThermalInfo,
-    /// Sets the hardware fan state. Success type: [`FanChangeResponse`]
-    SetFanState(FanState),
-}
-
-/// The header of the server's response. This indicates what happened and what (if any) payload data follows.
-#[derive(Debug, Decode, Encode)]
-enum ResponseHeader {
-    /// The operation was "successful". The requested data follows this.
-    Success,
-    /// An internal error occurred in the server. No extra data follows this.
-    InternalError(InternalError),
-}
-
-/// The bincode configuration used by both the client and the server.
-pub(crate) const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
-
-/// Convienence alias.
-type ExchangeResult<T> = Result<T, ExchangeError>;
-
-impl From<EncodeError> for ExchangeError {
-    fn from(err: EncodeError) -> Self {
-        Self::RequestError(err)
-    }
-}
-impl From<DecodeError> for ExchangeError {
-    fn from(err: DecodeError) -> Self {
-        Self::ResponseError(err)
-    }
-}
-impl Display for ExchangeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::RequestError(err) => {
-                write!(f, "couldn't submit request to a15kb server: {}", err)
-            }
-            Self::ResponseError(err) => {
-                write!(f, "couldn't retrieve response from a15kb server: {}", err)
-            }
-            Self::InternalError(err) => {
-                write!(f, "a15kb server had internal error: {}", err)
-            }
-        }
-    }
-}
-impl Error for ExchangeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::RequestError(err) => Some(err),
-            Self::ResponseError(err) => Some(err),
-            Self::InternalError(err) => err.source(),
-        }
     }
 }

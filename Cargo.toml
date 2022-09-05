@@ -1,15 +1,19 @@
 [package]
 name = "a15kb"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
-bincode = "2.0.0-rc.1"
+dbus = "0.9"
+dbus-crossroads = "0.5"
 
 [dev-dependencies]
 qmetaobject = "0.2"
 cstr = "0.2"
+
+[build-dependencies]
+dbus-codegen = "0.10"
 
 [[example]]
 name = "a15kb-repl"
