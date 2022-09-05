@@ -87,6 +87,7 @@ struct Controller {
     ec: Ec,
 }
 impl Controller {
+    /// Creates a new D-Bus controller if possible.
     pub fn new() -> Result<Self, anyhow::Error> {
         Ok(Self {
             ec: Ec::new().context("error setting up embedded controller")?,

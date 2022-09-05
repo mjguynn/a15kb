@@ -1,3 +1,5 @@
+echo "=== Stopping existing service ==="
+sudo systemctl stop a15kb.service
 set -e
 PLUGIN_DIR=/usr/lib/qt/qml/com/offbyond/a15kb
 MODULE_DIR=~/.local/share/plasma/plasmoids/a15kb-fans
@@ -66,5 +68,8 @@ EOF
 echo "=== Deploying module to $MODULE_DIR ==="
 rm -rf $MODULE_DIR/
 cp -r ./plasmoids/a15kb-fans/ $MODULE_DIR/
+
+echo "=== Starting service ==="
+sudo systemctl start a15kb.service
 
 echo "=== Done ==="

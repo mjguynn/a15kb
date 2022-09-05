@@ -105,6 +105,7 @@ pub struct ThermalInfo {
     pub fixed_fan_speed: Percent,
 }
 
+/// Convenience alias.
 type ClientResult<T> = Result<T, dbus::Error>;
 
 /// Represents a client connection to the a15kb server.
@@ -124,7 +125,9 @@ impl Client {
         F: FnMut(&Proxy<&'_ Connection>) -> ClientResult<T>,
     {
         const TIMEOUT: Duration = Duration::from_millis(1000);
-        let proxy = self.conn.with_proxy(BUS_NAME, "/", TIMEOUT);
+        let proxy = self
+            .conn
+            .with_proxy(BUS_NAME, "/com/offbyond/a15kb/Controller1", TIMEOUT);
         f(&proxy)
     }
 
@@ -145,7 +148,7 @@ impl Client {
     }
 
     /// Requests thermal information from the server. This is a blocking call.
-    pub fn thermal_info(&self) -> ClientResult<ThermalInfo> {
+    pub fn get_thermal_info(&self) -> ClientResult<ThermalInfo> {
         self.with_proxy(|proxy| {
             let (temp_cpu, temp_gpu, fan_rpm, fan_mode, fixed_fan_speed) =
                 proxy.get_thermal_info()?;
@@ -177,6 +180,7 @@ impl Client {
     }
 }
 
+/// A temperature in degrees Celcius.
 pub type Celcius = u8;
 
 /// A newtype wrapper around an `f64` which ensures the wrapped value is positive.

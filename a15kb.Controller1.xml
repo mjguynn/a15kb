@@ -6,6 +6,7 @@
   <interface name="com.offbyond.a15kb.Controller1">
 
     <property name="AllowedFanSpeeds" type="(dd)" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
       <doc>
         <doc:summary>The allowable (min, max) speed range for fixed-fan mode. 0.0..=1.0</doc:summary>
         <doc:para>
