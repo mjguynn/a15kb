@@ -51,7 +51,8 @@ cat << EOF | sudo tee /usr/share/dbus-1/system.d/com.offbyond.a15kb.conf
 </busconfig>
 EOF
 
-echo "=== Starting service ==="
+echo "=== Enabling and starting service ==="
+sudo systemctl enable a15kb.service
 sudo systemctl start a15kb.service
 
 echo "=== Done ==="
