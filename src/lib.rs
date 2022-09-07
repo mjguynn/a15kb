@@ -70,7 +70,7 @@ impl FanMode {
     /// - `1`: [Normal](`self::FanMode#variant.Normal`)
     /// - `2`: [Gaming](`self::FanMode#variant.Gaming`)
     /// - `3`: [Fixed](`self::FanMode#variant.Fixed`)
-    fn from_discriminant(discriminant: u8) -> Option<Self> {
+    const fn from_discriminant(discriminant: u8) -> Option<Self> {
         match discriminant {
             0 => Some(Self::Quiet),
             1 => Some(Self::Normal),
@@ -80,7 +80,7 @@ impl FanMode {
         }
     }
     /// The inverse of [from_discriminant][`FanMode#method.from_discriminant`]
-    fn to_discriminant(self) -> u8 {
+    const fn to_discriminant(self) -> u8 {
         match self {
             Self::Quiet => 0,
             Self::Normal => 1,
@@ -102,18 +102,13 @@ pub struct ThermalInfo {
 
     /// The RPM of the left and right fans, respectively.
     pub fan_rpm: (u16, u16),
-
-    /// The current fan mode, or `None` if the fan mode is unrecognized.
-    pub fan_mode: Option<FanMode>,
-
-    /// The fixed fan speed. This is only used when the fan is in fixed mode.
-    pub fixed_fan_speed: Percent,
 }
 
 /// Convenience alias.
 type ClientResult<T> = Result<T, dbus::Error>;
 
 /// Represents a client connection to the a15kb server.
+/// All method calls are blocking.
 pub struct Client {
     conn: Connection,
 }
@@ -136,10 +131,10 @@ impl Client {
         f(&proxy)
     }
 
-    /// Requests the server's allowable fan speeds.
-    pub fn allowed_fan_speeds(&self) -> ClientResult<RangeInclusive<Percent>> {
+    /// Returns the server's allowable fan speeds.
+    pub fn allowed_fixed_fan_speeds(&self) -> ClientResult<RangeInclusive<Percent>> {
         self.with_proxy(|proxy| {
-            let (min, max) = proxy.allowed_fan_speeds()?;
+            let (min, max) = proxy.allowed_fixed_fan_speeds()?;
             let min = Percent::try_from(min)
                 .map_err(|_| dbus::Error::new_failed("invalid min fan speed"))?;
             let max = Percent::try_from(max)
@@ -152,34 +147,44 @@ impl Client {
         })
     }
 
-    /// Requests thermal information from the server. This is a blocking call.
-    pub fn get_thermal_info(&self) -> ClientResult<ThermalInfo> {
+    /// Returns the system's current thermal information.
+    pub fn thermal_info(&self) -> ClientResult<ThermalInfo> {
         self.with_proxy(|proxy| {
-            let (temp_cpu, temp_gpu, fan_rpm, fan_mode, fixed_fan_speed) =
-                proxy.get_thermal_info()?;
-            let fixed_fan_speed = Percent::try_from(fixed_fan_speed)
-                .map_err(|_| dbus::Error::new_failed("invalid fan speed"))?;
-            let fan_mode = FanMode::from_discriminant(fan_mode);
+            let (temp_cpu, temp_gpu, fan_rpm) = proxy.get_thermal_info()?;
+            // let fixed_fan_speed = Percent::try_from(fixed_fan_speed)
+            //     .map_err(|_| dbus::Error::new_failed("invalid fan speed"))?;
+            // let fan_mode = FanMode::from_discriminant(fan_mode);
             Ok(ThermalInfo {
                 temp_cpu,
                 temp_gpu,
                 fan_rpm,
-                fan_mode,
-                fixed_fan_speed,
             })
         })
     }
 
-    /// Requests to set the fan mode. This is a blocking call.
+    /// Returns the current fan mode, or `None` if the fan mode is unrecognized.
+    pub fn fan_mode(&self) -> ClientResult<Option<FanMode>> {
+        self.with_proxy(|proxy| Ok(FanMode::from_discriminant(proxy.fan_mode()?)))
+    }
+
+    /// Attempts to set the current fan mode.
     pub fn set_fan_mode(&self, fan_mode: FanMode) -> ClientResult<()> {
         self.with_proxy(|proxy| proxy.set_fan_mode(fan_mode.to_discriminant()))
     }
 
-    /// Requests to set the fixed fan speed. This is a blocking call. The
-    /// specified value should be in the server's acceptable range, which can
-    /// be retrieved by calling [`allowed_fan_speeds`].
+    /// Returns the current fixed fan speed.
+    pub fn fixed_fan_speed(&self) -> ClientResult<Percent> {
+        self.with_proxy(|proxy| {
+            let fixed_fan_speed = proxy.fixed_fan_speed()?;
+            Percent::try_from(fixed_fan_speed)
+                .map_err(|_| dbus::Error::new_failed("negative fan speed"))
+        })
+    }
+    /// Attempts to set the fixed fan speed. The specified value should be in
+    /// the server's acceptable range, which can be retrieved by calling
+    /// [`allowed_fixed_fan_speeds`].
     ///
-    /// [`allowed_fan_speeds`]: self::FanMode#method.allowed_fan_speeds
+    /// [`allowed_fixed_fan_speeds`]: self::FanMode#method.allowed_fixed_fan_speeds
     pub fn set_fixed_fan_speed(&self, fixed_fan_speed: Percent) -> ClientResult<()> {
         self.with_proxy(|proxy| proxy.set_fixed_fan_speed(fixed_fan_speed.as_f64()))
     }
