@@ -1,6 +1,9 @@
 #![cfg(target_os = "linux")]
 use anyhow::{bail, Error};
 
+/// Runs the server.
+/// Accepted args:
+/// - `--replace`: Replaces the running a15kb server. (Untested)
 pub fn main() -> Result<(), Error> {
     let mut args = std::env::args();
     let replace = match args.nth(1).as_deref() {

@@ -1,25 +1,28 @@
 #![cfg(target_os = "linux")]
-//! Controlling the hardware of a GIGABYTE Aero 15 KB.
+//! Unofficial hardware controller for GIGABYTE AERO 15 KB laptops.
 //!
 //! # Overview
 //! [`a15kb`] is implemented using a client-server model. The server is
 //! launched with root privileges. It loads the `ec_sys` kernel module to
-//! communicate with the laptop's embedded controller and opens a D-bus
+//! communicate with the laptop's embedded controller and opens a D-Bus
 //! connection. Clients run at any privilege level. They connect to the
 //! socket, submit requests to the server, and receive responses.
 //!
 //! # Notes
-//! Running multiple servers at once probably isn't a good idea. I'm unsure whether concurrent
-//! writes to the embedded controller are serialized by the kernel or whether they cause a data
-//! race (which could be disasterous). My bet's on serialization, but I'm too afraid to test it.
+//! Running multiple servers at once probably isn't a good idea. I'm unsure
+//! whether concurrent writes to the embedded controller are serialized by
+//! the kernel or whether they cause a data race (which could be
+//! disasterous). My bet's on serialization, but I'm too afraid to test it.
 //!
 //! I'd like to support Windows, however...
-//!     - You can't access the embedded controller in Windows without a kernel driver. Most people
-//!       seem to use [WinRing0x64.sys], but it's flagged as malware by many AV vendors. (Hell,
-//!       maybe it is malware. I can't find the source for it.)
-//!     - [aeroctl] is an existing solution for controlling Aero fans on Windows. (They hijack the
-//!       existing Gigabyte ACPI WMI driver instead of installing their own kernel driver, which
-//!       is a much more clever way to gain fan access.)
+//!     - You can't access the embedded controller in Windows without a kernel
+//!       driver. Most people seem to use [WinRing0x64.sys], but it's flagged
+//!       as malware by many AV vendors. (Hell, maybe it is malware. I can't
+//!       find the source for it.)
+//!     - [aeroctl] is an existing solution for controlling Aero fans on
+//!       Windows. (They hijack the existing Gigabyte ACPI WMI driver instead
+//!       of installing their own kernel driver, which is a much more clever
+//!       way to gain fan access.)
 //!
 //! [aeroctl]: https://gitlab.com/wtwrp/aeroctl/
 //! [WinRing0x64.sys]: https://github.com/Soberia/EmbeddedController/blob/main/WinRing0x64.sys
@@ -29,6 +32,7 @@ use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
+mod ec;
 mod server;
 
 #[allow(clippy::type_complexity)]
@@ -47,8 +51,8 @@ pub const BUS_NAME: &str = "com.offbyond.a15kb";
 /// Laptop fan mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FanMode {
-    /// Quiet fans. May temporarily turn off the fan, thermal-throttle the CPU, and disable
-    /// Turboboost.
+    /// Quiet fans. May temporarily turn off the fan, thermal-throttle the
+    /// CPU, and disable Turboboost.
     Quiet,
     /// Normal fans.
     Normal,
@@ -92,7 +96,8 @@ pub struct ThermalInfo {
     /// The CPU temperature, in Celcius.
     pub temp_cpu: Celcius,
 
-    /// The GPU temperature, in Celcius. This is 0 if the GPU is currently powered off.
+    /// The GPU temperature, in Celcius. This is 0 if the GPU is currently
+    /// powered off.
     pub temp_gpu: Celcius,
 
     /// The RPM of the left and right fans, respectively.
