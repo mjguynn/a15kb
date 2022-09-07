@@ -22,6 +22,7 @@ Restart=on-failure
 
 [Install]
 Alias=dbus-com.offbyond.a15kb.service
+WantedBy=multi-user.target
 EOF
 
 echo "=== Registering D-Bus service ==="
