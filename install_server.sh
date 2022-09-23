@@ -18,7 +18,6 @@ Type=dbus
 ExecStart=/usr/sbin/a15kb
 User=root
 BusName=com.offbyond.a15kb
-Restart=on-failure
 
 [Install]
 Alias=dbus-com.offbyond.a15kb.service
