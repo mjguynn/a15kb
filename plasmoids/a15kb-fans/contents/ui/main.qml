@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.0
+import QtQuick.Controls 2.15
 
 import org.kde.plasma.components 3.0 as PlasmaComponents
 import org.kde.plasma.core 2.1 as PlasmaCore
@@ -28,7 +29,6 @@ Item {
     }
 
     Plasmoid.fullRepresentation: ColumnLayout {
-        anchors.fill: parent
         spacing: PlasmaCore.Units.gridUnit
 
         Section {
@@ -44,31 +44,70 @@ Item {
         }
         Section {
             title: i18n("Fan Configuration")
+            ButtonGroup { id: radioGroup }
+
             PlasmaComponents.RadioButton {
                 id: quietFanBtn
                 text: "Quiet"
+                ButtonGroup.group: radioGroup
             }
             PlasmaComponents.RadioButton {
                 id: normalFanBtn
                 text: "Normal"
+                ButtonGroup.group: radioGroup
             }
             PlasmaComponents.RadioButton {
                 id: gamingFanBtn
                 text: "Gaming"
+                ButtonGroup.group: radioGroup
             }
-            PlasmaComponents.RadioButton {
-                id: fixedFanBtn
-                text: "Custom"
+
+            RowLayout {
+                spacing: PlasmaCore.Units.smallSpacing
+
+                PlasmaComponents.RadioButton {
+                    id: fixedFanBtn
+                    text: "Custom: "
+                    ButtonGroup.group: radioGroup
+                }
+
+                PlasmaComponents.Label {
+                    text: Logic.stringForPercent(fixedFanSlider.value, 1);
+                    color: {
+                        if (fixedFanBtn.checked){
+                            PlasmaCore.Theme.neutralTextColor
+                        } else {
+                            PlasmaCore.Theme.disabledTextColor
+                        }
+                    }
+                }
             }
-            PlasmaComponents.Slider {
-                id: fixedFanSlider
-                from: A15KB.Controller.fixedFanSpeedMin
-                to: A15KB.Controller.fixedFanSpeedMax
-                value: 0.5
+            ColumnLayout {
+                Layout.preferredWidth: 200
+                spacing: PlasmaCore.Units.smallSpacing
+                transform: Translate {x: 20}
+                
+                PlasmaComponents.Slider {
+                    id: fixedFanSlider
+                    from: A15KB.Controller.fixedFanSpeedMin
+                    to: A15KB.Controller.fixedFanSpeedMax
+                    value: 0.5
+                }
+                RowLayout {
+                    PlasmaComponents.Label {
+                        Layout.fillWidth: true
+                        text: Math.floor(A15KB.Controller.fixedFanSpeedMin * 100) + "%"
+                        color: PlasmaCore.Theme.disabledTextColor
+                    }
+                    PlasmaComponents.Label {
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                        text: Math.floor(A15KB.Controller.fixedFanSpeedMax * 100) + "%"
+                        color: PlasmaCore.Theme.disabledTextColor
+                    }
+                }
             }
-            PlasmaComponents.Label {
-                id: debugLabel
-            }
+            
             Connections {
                 target: A15KB.Controller
                 function onFanStateChanged(fanMode, fixedFanSpeed) {
@@ -76,10 +115,12 @@ Item {
                     if (!btns[fanMode].checked) {
                         btns[fanMode].toggle();
                     }
-                    debugLabel.text = "" + fanMode;
                     fixedFanSlider.value = fixedFanSpeed;
                 }
             }
+        }
+        Rectangle {
+            Layout.fillHeight: true
         }
     }
 }

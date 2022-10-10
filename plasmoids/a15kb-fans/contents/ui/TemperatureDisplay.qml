@@ -24,12 +24,12 @@ RowLayout {
 
     PlasmaComponents.Label {
         text: root.deviceName + ": "
-        font.pixelSize: PlasmaCore.Units.iconSizes.small
+        //font.pixelSize: PlasmaCore.Units.iconSizes.small
     }
     PlasmaComponents.Label {
         text: Logic.stringForTemp(root.temperature)
         color: PlasmaCore.Theme.neutralTextColor
-        font.pixelSize: PlasmaCore.Units.iconSizes.small
+        //font.pixelSize: PlasmaCore.Units.iconSizes.small
     }
 
 }

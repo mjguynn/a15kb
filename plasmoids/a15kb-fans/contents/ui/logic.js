@@ -13,6 +13,9 @@ function stringForTemp(temp) {
     if (temp == 0) {
         return i18nc("The device is not reporting a temperature, which probably means it's not powered.", "Offline");
     } else {
-        return `${temp}°C`
+        return `${temp}°C`;
     }
+}
+function stringForPercent(percent, precision) {
+    return (~~(percent * 10**(2+precision)) / 10**precision) + "%";
 }
