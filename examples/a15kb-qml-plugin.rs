@@ -45,6 +45,9 @@ struct QA15KBController {
     /// Emitted when the singleton's constant attributes are populated.
     constPopulated: qt_signal!(),
 
+    setFanMode: qt_method!(fn(&mut self, mode: u8)),
+    setFixedFanSpeed: qt_method!(fn(&mut self, speed: f64)),
+    
     client: Option<Client>,
 
     thread: Option<(thread::JoinHandle<()>, Arc<ThreadState>)>
@@ -145,6 +148,22 @@ impl QA15KBController {
     }
     fn fan_rpm_1(&mut self) -> u16 {
         self.thermals().fan_rpm.1
+    }
+    #[allow(non_snake_case)]
+    fn setFixedFanSpeed(&mut self, speed: f64) {
+        if let Ok(pcnt) = Percent::try_from(speed) {
+            if let Some(client) = self.client.as_ref() {
+                let _ = client.set_fixed_fan_speed(pcnt);
+            }
+        }
+    }
+    #[allow(non_snake_case)]
+    fn setFanMode(&mut self, mode: u8) {
+        if let Some(fan_mode) = FanMode::from_discriminant(mode) {
+            if let Some(client) = self.client.as_ref() {
+                let _ = client.set_fan_mode(fan_mode);
+            }
+        }
     }
 }
 

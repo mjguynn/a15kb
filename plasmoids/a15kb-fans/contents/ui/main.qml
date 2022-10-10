@@ -51,16 +51,25 @@ Item {
                 id: quietFanBtn
                 text: "Quiet"
                 ButtonGroup.group: radioGroup
+                onToggled: {
+                    A15KB.Controller.setFanMode(0);
+                }
             }
             PlasmaComponents.RadioButton {
                 id: normalFanBtn
                 text: "Normal"
                 ButtonGroup.group: radioGroup
+                onToggled: {
+                    A15KB.Controller.setFanMode(1);
+                }
             }
             PlasmaComponents.RadioButton {
                 id: gamingFanBtn
                 text: "Gaming"
                 ButtonGroup.group: radioGroup
+                onToggled: {
+                    A15KB.Controller.setFanMode(2);
+                }
             }
 
             RowLayout {
@@ -70,6 +79,9 @@ Item {
                     id: fixedFanBtn
                     text: "Custom: "
                     ButtonGroup.group: radioGroup
+                    onToggled: {
+                        A15KB.Controller.setFanMode(3);
+                    }
                 }
 
                 PlasmaComponents.Label {
@@ -93,6 +105,9 @@ Item {
                     from: A15KB.Controller.fixedFanSpeedMin
                     to: A15KB.Controller.fixedFanSpeedMax
                     value: 0.5
+                    onMoved: {
+                        A15KB.Controller.setFixedFanSpeed(fixedFanSlider.value);
+                    }
                 }
                 RowLayout {
                     PlasmaComponents.Label {
