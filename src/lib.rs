@@ -49,12 +49,13 @@ pub use server::ServerCfg;
 pub const BUS_NAME: &str = "com.offbyond.a15kb";
 
 /// Laptop fan mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FanMode {
     /// Quiet fans. May temporarily turn off the fan, thermal-throttle the
     /// CPU, and disable Turboboost.
     Quiet,
     /// Normal fans.
+    #[default]
     Normal,
     /// Aggressive "gaming" fans.
     Gaming,
@@ -70,7 +71,7 @@ impl FanMode {
     /// - `1`: [Normal](`self::FanMode#variant.Normal`)
     /// - `2`: [Gaming](`self::FanMode#variant.Gaming`)
     /// - `3`: [Fixed](`self::FanMode#variant.Fixed`)
-    const fn from_discriminant(discriminant: u8) -> Option<Self> {
+    pub const fn from_discriminant(discriminant: u8) -> Option<Self> {
         match discriminant {
             0 => Some(Self::Quiet),
             1 => Some(Self::Normal),
@@ -80,7 +81,7 @@ impl FanMode {
         }
     }
     /// The inverse of [from_discriminant][`FanMode#method.from_discriminant`]
-    const fn to_discriminant(self) -> u8 {
+    pub const fn to_discriminant(self) -> u8 {
         match self {
             Self::Quiet => 0,
             Self::Normal => 1,
@@ -194,7 +195,7 @@ impl Client {
 pub type Celcius = u8;
 
 /// A newtype wrapper around an `f64` which ensures the wrapped value is positive.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Percent(f64);
 
 impl Percent {

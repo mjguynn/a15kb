@@ -44,6 +44,42 @@ Item {
         }
         Section {
             title: i18n("Fan Configuration")
+            PlasmaComponents.RadioButton {
+                id: quietFanBtn
+                text: "Quiet"
+            }
+            PlasmaComponents.RadioButton {
+                id: normalFanBtn
+                text: "Normal"
+            }
+            PlasmaComponents.RadioButton {
+                id: gamingFanBtn
+                text: "Gaming"
+            }
+            PlasmaComponents.RadioButton {
+                id: fixedFanBtn
+                text: "Custom"
+            }
+            PlasmaComponents.Slider {
+                id: fixedFanSlider
+                from: A15KB.Controller.fixedFanSpeedMin
+                to: A15KB.Controller.fixedFanSpeedMax
+                value: 0.5
+            }
+            PlasmaComponents.Label {
+                id: debugLabel
+            }
+            Connections {
+                target: A15KB.Controller
+                function onFanStateChanged(fanMode, fixedFanSpeed) {
+                    let btns = [quietFanBtn, normalFanBtn, gamingFanBtn, fixedFanBtn];
+                    if (!btns[fanMode].checked) {
+                        btns[fanMode].toggle();
+                    }
+                    debugLabel.text = "" + fanMode;
+                    fixedFanSlider.value = fixedFanSpeed;
+                }
+            }
         }
     }
 }

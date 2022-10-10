@@ -1,4 +1,4 @@
-use a15kb::{Client, ThermalInfo};
+use a15kb::{Client, FanMode, Percent, ThermalInfo};
 use cstr::cstr;
 use qmetaobject::prelude::*;
 use qmetaobject::{qml_register_singleton_type, QSingletonInit};
@@ -31,10 +31,16 @@ struct QA15KBController {
     fixedFanSpeedMax: qt_property!(f64),
 
     /// The last recorded thermal information.
-    thermal_info: Mutex<a15kb::ThermalInfo>,
+    thermal_info: Mutex<ThermalInfo>,
 
     /// Emitted whenever any thermal information is updated.
     thermalsChanged: qt_signal!(),
+
+    /// The last recorded fan state (mode + fixed fan speed)
+    fan_state: Mutex<(FanMode, Percent)>,
+
+    /// Emitted when the fan state changes.
+    fanStateChanged: qt_signal!(fan_mode: u8, fixed_fan_speed: f64),
 
     client: Option<Client>,
 
@@ -61,12 +67,27 @@ impl QSingletonInit for QA15KBController {
         };
 
         let qptr = QPointer::from(&*self);
-        let update_thermals = qmetaobject::queued_callback(move |()| {
+        let update = qmetaobject::queued_callback(move |()| {
             if let Some(obj) = qptr.as_ref() {
                 if let Some(client) = obj.client.as_ref() {
+                    // Update thermals
                     let thermal_info = client.thermal_info().unwrap_or_default();
                     *obj.thermal_info.lock().unwrap() = thermal_info;
                     obj.thermalsChanged();
+
+                    // Potentially update fan state
+                    let mut fan_state = obj.fan_state.lock().unwrap();
+                    let new_fan_state = (
+                        client.fan_mode().unwrap_or_default().unwrap_or_default(),
+                        client.fixed_fan_speed().unwrap_or_default(),
+                    );
+                    if *fan_state != new_fan_state {
+                        *fan_state = new_fan_state;
+                        obj.fanStateChanged(
+                            new_fan_state.0.to_discriminant(),
+                            new_fan_state.1.as_f64(),
+                        );
+                    }
                 }
             }
         });
@@ -85,7 +106,7 @@ impl QSingletonInit for QA15KBController {
                 .unwrap()
                 .0;
             std::mem::drop(lock);
-            update_thermals(());
+            update(());
         });
         self.thread = Some((handle, thread_state));
     }
