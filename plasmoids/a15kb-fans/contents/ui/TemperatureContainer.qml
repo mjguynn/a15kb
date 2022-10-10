@@ -13,15 +13,13 @@ ColumnLayout {
     id: root
 
     anchors.fill: parent
-    
+
     PlasmaExtras.Heading {
         text: i18n("Hardware Temperatures")
     }
 
-    Separator {
-
-    }
-
+    Separator {}
+    
     ColumnLayout {
         transform: Translate {x: PlasmaCore.Units.smallSpacing * 4}
 

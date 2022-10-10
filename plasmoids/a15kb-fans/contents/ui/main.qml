@@ -36,7 +36,7 @@ Item {
             id: list
             keyNavigationEnabled: true
 
-            leftMargin: PlasmaCore.Units.smallSpacing * 4
+            leftMargin: PlasmaCore.Units.smallSpacing * 2
             rightMargin: PlasmaCore.Units.smallSpacing * 2
             topMargin: PlasmaCore.Units.smallSpacing * 2
             bottomMargin: PlasmaCore.Units.smallSpacing * 2
