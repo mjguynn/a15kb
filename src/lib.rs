@@ -91,7 +91,7 @@ impl FanMode {
 }
 
 /// The current thermal state of the system.
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct ThermalInfo {
     /// The CPU temperature, in Celcius.
     pub temp_cpu: Celcius,

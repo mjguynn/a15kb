@@ -14,7 +14,8 @@
         "FormFactors": [
             "desktop"
         ],
-        "Version": "0"
+        "Version": "0",
+        "EnabledByDefault": true
     },
     "X-Plasma-API": "declarativeappletscript",
     "X-Plasma-MainScript": "ui/main.qml",
