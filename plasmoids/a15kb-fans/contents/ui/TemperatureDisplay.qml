@@ -3,7 +3,6 @@ import QtQuick.Layouts 1.2
 
 import org.kde.plasma.components 3.0 as PlasmaComponents
 import org.kde.plasma.core 2.1 as PlasmaCore
-import org.kde.plasma.extras 2.0 as PlasmaExtras
 
 import "logic.js" as Logic
 
@@ -30,6 +29,7 @@ RowLayout {
     PlasmaComponents.Label {
         text: Logic.stringForTemp(root.temperature)
         color: PlasmaCore.Theme.neutralTextColor
+        font.pixelSize: PlasmaCore.Units.iconSizes.small
     }
 
 }

@@ -10,9 +10,11 @@ import com.offbyond.a15kb 1.0 as A15KB
 import "logic.js" as Logic
 
 ColumnLayout {
-    id: root
-
-    anchors.fill: parent
+    anchors {
+        left: parent.left
+        right: parent.right
+    }
+    spacing: PlasmaCore.Units.smallSpacing
 
     PlasmaExtras.Heading {
         text: i18n("Hardware Temperatures")
