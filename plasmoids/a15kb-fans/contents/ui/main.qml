@@ -17,9 +17,9 @@ Item {
         let maxTemp = A15KB.Controller.cpuTemp;
         let gpuTemp = A15KB.Controller.gpuTemp;
         if (gpuTemp != 0) {
-            maxTemp = Math.max(avgTemp + gpuTemp);
+            maxTemp = Math.max(maxTemp, gpuTemp);
         }
-        return Logic.iconForTemp(avgTemp);
+        return Logic.iconForTemp(maxTemp);
     }
     Plasmoid.toolTipMainText: {
         return "CPU: " + Logic.stringForTemp(A15KB.Controller.cpuTemp);
@@ -42,6 +42,7 @@ Item {
                 temperature: A15KB.Controller.gpuTemp
             }
         }
+        
         Section {
             title: i18n("Fan Configuration")
             ButtonGroup { id: radioGroup }

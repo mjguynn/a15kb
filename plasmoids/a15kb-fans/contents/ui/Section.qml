@@ -10,10 +10,6 @@ import com.offbyond.a15kb 1.0 as A15KB
 import "logic.js" as Logic
 
 ColumnLayout {
-    anchors {
-        left: parent.left
-        right: parent.right
-    }
     property alias title: heading.text
     default property alias data: content.data
     Layout.alignment: Qt.AlignTop
@@ -26,7 +22,7 @@ ColumnLayout {
     // Dividing line
     Rectangle {
         Layout.alignment: Qt.AlignLeft
-        Layout.preferredWidth: parent.width
+        Layout.fillWidth: true
         Layout.preferredHeight: 1
         color: PlasmaCore.Theme.disabledTextColor
     }
@@ -34,6 +30,7 @@ ColumnLayout {
     ColumnLayout {
         id: content
         spacing: PlasmaCore.Units.smallSpacing
-        transform: Translate {x: PlasmaCore.Units.smallSpacing * 4}
+        Layout.alignment: Qt.AlignLeft
+        Layout.leftMargin: PlasmaCore.Units.smallSpacing * 4
     }
 }

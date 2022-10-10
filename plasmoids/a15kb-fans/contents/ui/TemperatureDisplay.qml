@@ -32,4 +32,7 @@ RowLayout {
         //font.pixelSize: PlasmaCore.Units.iconSizes.small
     }
 
+    // To make it look visually aligned with the radio buttons
+    // I could put this on the radio buttons instead but that's a lot of work
+    transform: Translate { x: -10 }
 }

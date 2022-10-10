@@ -27,8 +27,8 @@ struct QA15KBController {
     fanRpm0: qt_property!(u16; NOTIFY thermalsChanged READ fan_rpm_0),
     fanRpm1: qt_property!(u16; NOTIFY thermalsChanged READ fan_rpm_1),
 
-    fixedFanSpeedMin: qt_property!(f64),
-    fixedFanSpeedMax: qt_property!(f64),
+    fixedFanSpeedMin: qt_property!(f64; NOTIFY constPopulated),
+    fixedFanSpeedMax: qt_property!(f64; NOTIFY constPopulated),
 
     /// The last recorded thermal information.
     thermal_info: Mutex<ThermalInfo>,
@@ -41,6 +41,9 @@ struct QA15KBController {
 
     /// Emitted when the fan state changes.
     fanStateChanged: qt_signal!(fan_mode: u8, fixed_fan_speed: f64),
+
+    /// Emitted when the singleton's constant attributes are populated.
+    constPopulated: qt_signal!(),
 
     client: Option<Client>,
 
@@ -55,6 +58,7 @@ impl QSingletonInit for QA15KBController {
                 if let Ok(range) = client.allowed_fixed_fan_speeds() {
                     self.fixedFanSpeedMin = range.start().as_f64();
                     self.fixedFanSpeedMax = range.end().as_f64();
+                    self.constPopulated();
                 }
                 self.client = Some(client);
             }
