@@ -10,6 +10,9 @@ import com.offbyond.a15kb 1.0 as A15KB
 import "logic.js" as Logic
 
 ColumnLayout {
+    property alias title: heading.text
+    default property alias data: content.data
+
     anchors {
         left: parent.left
         right: parent.right
@@ -17,22 +20,19 @@ ColumnLayout {
     spacing: PlasmaCore.Units.smallSpacing
 
     PlasmaExtras.Heading {
-        text: i18n("Hardware Temperatures")
+        id: heading
     }
 
-    Separator {}
-    
+    // Dividing line
+    Rectangle {
+        Layout.alignment: Qt.AlignLeft
+        Layout.preferredWidth: parent.width
+        Layout.preferredHeight: 1
+        color: PlasmaCore.Theme.disabledTextColor
+    }
+
     ColumnLayout {
+        id: content
         transform: Translate {x: PlasmaCore.Units.smallSpacing * 4}
-
-        TemperatureDisplay {
-            deviceName: i18n("CPU")
-            temperature: A15KB.Controller.cpuTemp
-        }
-
-        TemperatureDisplay {
-            deviceName: i18n("GPU")
-            temperature: A15KB.Controller.gpuTemp
-        }
     }
 }

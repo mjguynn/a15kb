@@ -31,7 +31,19 @@ Item {
         anchors.fill: parent
         spacing: PlasmaCore.Units.gridUnit
 
-        TemperatureContainer {}
-        FanControls {}
+        Section {
+            title: i18n("Hardware Temperatures")
+            TemperatureDisplay {
+                deviceName: i18n("CPU")
+                temperature: A15KB.Controller.cpuTemp
+            }
+            TemperatureDisplay {
+                deviceName: i18n("GPU")
+                temperature: A15KB.Controller.gpuTemp
+            }
+        }
+        Section {
+            title: i18n("Fan Configuration")
+        }
     }
 }
