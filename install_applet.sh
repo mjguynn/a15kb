@@ -1,6 +1,6 @@
 set -e
 PLUGIN_DIR=/usr/lib/qt/qml/com/offbyond/a15kb
-MODULE_DIR=~/.local/share/plasma/plasmoids/a15kb-fans
+MODULE_DIR=~/.local/share/plasma/plasmoids
 echo "=== Building QML plugin ==="
 cargo build --release --example a15kb-qml-plugin
 
@@ -14,6 +14,6 @@ plugin a15kb_qml_plugin
 EOF
 
 echo "=== Deploying module to $MODULE_DIR ==="
-rm -rf $MODULE_DIR/
+rm -rf $MODULE_DIR/a15kb-fans
 mkdir -p $MODULE_DIR/
 cp -r ./plasmoids/a15kb-fans/ $MODULE_DIR/
