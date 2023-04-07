@@ -19,7 +19,7 @@
     },
     "X-Plasma-API": "declarativeappletscript",
     "X-Plasma-MainScript": "ui/main.qml",
-    "X-Plasma-NotificationArea": true,
+    "X-Plasma-NotificationArea": "true",
     "X-Plasma-NotificationAreaCategory": "Hardware",
     "X-Plasma-DBusActivationService": "com.offbyond.a15kb"
 }
