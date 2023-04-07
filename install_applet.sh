@@ -15,4 +15,5 @@ EOF
 
 echo "=== Deploying module to $MODULE_DIR ==="
 rm -rf $MODULE_DIR/
+mkdir -p $MODULE_DIR/
 cp -r ./plasmoids/a15kb-fans/ $MODULE_DIR/
